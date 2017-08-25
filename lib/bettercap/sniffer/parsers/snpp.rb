@@ -7,6 +7,10 @@ Author : Simone 'evilsocket' Margaritelli
 Email  : evilsocket@gmail.com
 Blog   : https://www.evilsocket.net/
 
+Simple Network Paging Protocol (SNPP) authentication parser:
+  Author : Brendan Coles
+  Email  : bcoles[at]gmail.com
+
 This project is released under the GPL 3 license.
 
 =end
@@ -19,19 +23,17 @@ class Snpp < Base
     @name = 'SNPP'
   end
   def on_packet( pkt )
-    begin
-      if pkt.tcp_dst == 444
-        lines = pkt.to_s.split(/\r?\n/)
-        lines.each do |line|
-          if line =~ /LOGIn\s+(.+)\s+(.+)$/
-            user = $1
-            pass = $2
-            StreamLogger.log_raw( pkt, @name, "username=#{user} password=#{pass}" )
-          end
-        end
+    return unless pkt.tcp_dst == 444
+
+    lines = pkt.to_s.split(/\r?\n/)
+    lines.each do |line|
+      if line =~ /LOGIn\s+(.+)\s+(.+)$/
+        user = $1
+        pass = $2
+        StreamLogger.log_raw( pkt, @name, "username=#{user} password=#{pass}" )
       end
-    rescue
     end
+  rescue
   end
 end
 end
