@@ -14,12 +14,12 @@ import (
 	"github.com/bettercap/bettercap/packets"
 	"github.com/bettercap/bettercap/session"
 
-	"github.com/bettercap/gopacket"
-	"github.com/bettercap/gopacket/layers"
-	"github.com/bettercap/gopacket/pcap"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
 
 	// TODO: refactor to use gopacket when gopacket folks
-	// will fix this > https://github.com/bettercap/gopacket/issues/334
+	// will fix this > https://github.com/google/gopacket/issues/334
 	"github.com/mdlayher/dhcp6"
 	"github.com/mdlayher/dhcp6/dhcp6opts"
 )
@@ -43,7 +43,7 @@ func NewDHCP6Spoofer(s *session.Session) *DHCP6Spoofer {
 	}
 
 	spoof.AddParam(session.NewStringParameter("dhcp6.spoof.domains",
-		"microsoft.com, goole.com, facebook.com, apple.com, twitter.com",
+		"microsoft.com, google.com, facebook.com, apple.com, twitter.com",
 		``,
 		"Comma separated values of domain names to spoof."))
 
