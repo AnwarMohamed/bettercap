@@ -18,40 +18,101 @@ type JSRequest struct {
 	Client      string
 	Method      string
 	Version     string
+	Scheme      string
 	Path        string
 	Query       string
 	Hostname    string
 	ContentType string
 	Headers     []JSHeader
 	Body        string
-	req         *http.Request
+
+	req      *http.Request
+	refHash  string
+	bodyRead bool
 }
 
-func NewJSRequest(req *http.Request) JSRequest {
+func NewJSRequest(req *http.Request) *JSRequest {
 	headers := make([]JSHeader, 0)
 	cType := ""
 
-	for key, values := range req.Header {
+	for name, values := range req.Header {
 		for _, value := range values {
-			headers = append(headers, JSHeader{key, value})
+			headers = append(headers, JSHeader{name, value})
 
-			if key == "Content-Type" {
+			if name == "Content-Type" {
 				cType = value
 			}
 		}
 	}
 
-	return JSRequest{
+	jreq := &JSRequest{
 		Client:      strings.Split(req.RemoteAddr, ":")[0],
 		Method:      req.Method,
 		Version:     fmt.Sprintf("%d.%d", req.ProtoMajor, req.ProtoMinor),
+		Scheme:      req.URL.Scheme,
 		Hostname:    req.Host,
 		Path:        req.URL.Path,
 		Query:       req.URL.RawQuery,
 		ContentType: cType,
 		Headers:     headers,
 
-		req: req,
+		req:      req,
+		bodyRead: false,
+	}
+	jreq.UpdateHash()
+
+	return jreq
+}
+
+func (j *JSRequest) NewHash() string {
+	hash := fmt.Sprintf("%s.%s.%s.%s.%s.%s.%s.%s", j.Client, j.Method, j.Version, j.Scheme, j.Hostname, j.Path, j.Query, j.ContentType)
+	for _, h := range j.Headers {
+		hash += fmt.Sprintf(".%s-%s", h.Name, h.Value)
+	}
+	hash += "." + j.Body
+	return hash
+}
+
+func (j *JSRequest) UpdateHash() {
+	j.refHash = j.NewHash()
+}
+
+func (j *JSRequest) WasModified() bool {
+	// body was read
+	if j.bodyRead {
+		return true
+	}
+	// check if any of the fields has been changed
+	return j.NewHash() != j.refHash
+}
+
+func (j *JSRequest) GetHeader(name, deflt string) string {
+	name = strings.ToLower(name)
+	for _, h := range j.Headers {
+		if name == strings.ToLower(h.Name) {
+			return h.Value
+		}
+	}
+	return deflt
+}
+
+func (j *JSRequest) SetHeader(name, value string) {
+	name = strings.ToLower(name)
+	for i, h := range j.Headers {
+		if name == strings.ToLower(h.Name) {
+			j.Headers[i].Value = value
+			return
+		}
+	}
+	j.Headers = append(j.Headers, JSHeader{name, value})
+}
+
+func (j *JSRequest) RemoveHeader(name string) {
+	name = strings.ToLower(name)
+	for i, h := range j.Headers {
+		if name == strings.ToLower(h.Name) {
+			j.Headers = append(j.Headers[:i], j.Headers[i+1:]...)
+		}
 	}
 }
 
@@ -62,6 +123,7 @@ func (j *JSRequest) ReadBody() string {
 	}
 
 	j.Body = string(raw)
+	j.bodyRead = true
 	// reset the request body to the original unread state
 	j.req.Body = ioutil.NopCloser(bytes.NewBuffer(raw))
 
@@ -73,7 +135,7 @@ func (j *JSRequest) ParseForm() map[string]string {
 		j.Body = j.ReadBody()
 	}
 
-	form := make(map[string]string, 0)
+	form := make(map[string]string)
 	parts := strings.Split(j.Body, "&")
 
 	for _, part := range parts {
@@ -89,4 +151,27 @@ func (j *JSRequest) ParseForm() map[string]string {
 	}
 
 	return form
+}
+
+func (j *JSRequest) ToRequest() (req *http.Request) {
+	url := fmt.Sprintf("%s://%s:%s%s?%s", j.Scheme, j.Hostname, j.req.URL.Port(), j.Path, j.Query)
+	if j.Body == "" {
+		req, _ = http.NewRequest(j.Method, url, j.req.Body)
+	} else {
+		req, _ = http.NewRequest(j.Method, url, strings.NewReader(j.Body))
+	}
+
+	hadType := false
+	for _, h := range j.Headers {
+		req.Header.Set(h.Name, h.Value)
+		if h.Name == "Content-Type" {
+			hadType = true
+		}
+	}
+
+	if !hadType && j.ContentType != "" {
+		req.Header.Set("Content-Type", j.ContentType)
+	}
+
+	return
 }

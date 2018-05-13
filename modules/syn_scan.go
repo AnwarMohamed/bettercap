@@ -38,10 +38,10 @@ func NewSynScanner(s *session.Session) *SynScanner {
 		waitGroup:     &sync.WaitGroup{},
 	}
 
-	ss.AddHandler(session.NewModuleHandler("syn.scan IP-RANGE START-PORT END-PORT", "syn.scan ([^\\s]+) (\\d+)([\\s\\d]*)",
+	ss.AddHandler(session.NewModuleHandler("syn.scan IP-RANGE [START-PORT] [END-PORT]", "syn.scan ([^\\s]+) ?(\\d+)?([\\s\\d]*)?",
 		"Perform a syn port scanning against an IP address within the provided ports range.",
 		func(args []string) error {
-			if ss.Running() == true {
+			if ss.Running() {
 				return fmt.Errorf("A scan is already running, wait for it to end before starting a new one.")
 			}
 
@@ -50,20 +50,22 @@ func NewSynScanner(s *session.Session) *SynScanner {
 				return fmt.Errorf("Error while parsing IP range '%s': %s", args[0], err)
 			}
 
-			ss.addresses = list.Expand()
-			ss.startPort = 0
-			ss.endPort = 0
-
-			if ss.startPort, err = strconv.Atoi(core.Trim(args[1])); err != nil {
-				return fmt.Errorf("Invalid START-PORT: %s", err)
-			}
-
-			if ss.startPort > 65535 {
-				ss.startPort = 65535
-			}
-			ss.endPort = ss.startPort
-
 			argc := len(args)
+			ss.addresses = list.Expand()
+			ss.startPort = 1
+			ss.endPort = 65535
+
+			if argc > 1 && core.Trim(args[1]) != "" {
+				if ss.startPort, err = strconv.Atoi(core.Trim(args[1])); err != nil {
+					return fmt.Errorf("Invalid START-PORT: %s", err)
+				}
+
+				if ss.startPort > 65535 {
+					ss.startPort = 65535
+				}
+				ss.endPort = ss.startPort
+			}
+
 			if argc > 2 && core.Trim(args[2]) != "" {
 				if ss.endPort, err = strconv.Atoi(core.Trim(args[2])); err != nil {
 					return fmt.Errorf("Invalid END-PORT: %s", err)
@@ -174,7 +176,7 @@ func (s *SynScanner) synScan() error {
 
 		// start sending SYN packets and wait
 		for _, address := range s.addresses {
-			if s.Running() == false {
+			if !s.Running() {
 				break
 			}
 			mac, err := findMAC(s.Session, address, true)
@@ -184,7 +186,7 @@ func (s *SynScanner) synScan() error {
 			}
 
 			for dstPort := s.startPort; dstPort < s.endPort+1; dstPort++ {
-				if s.Running() == false {
+				if !s.Running() {
 					break
 				}
 

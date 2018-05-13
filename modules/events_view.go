@@ -4,25 +4,27 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/bettercap/bettercap/core"
 	"github.com/bettercap/bettercap/network"
 	"github.com/bettercap/bettercap/session"
+
+	"github.com/google/go-github/github"
 )
 
 const eventTimeFormat = "15:04:05"
 
-func (s EventsStream) viewLogEvent(e session.Event) {
-	fmt.Printf("[%s] [%s] [%s] %s\n",
+func (s *EventsStream) viewLogEvent(e session.Event) {
+	fmt.Fprintf(s.output, "[%s] [%s] [%s] %s\n",
 		e.Time.Format(eventTimeFormat),
 		core.Green(e.Tag),
 		e.Label(),
 		e.Data.(session.LogMessage).Message)
 }
 
-func (s EventsStream) viewWiFiEvent(e session.Event) {
-
+func (s *EventsStream) viewWiFiEvent(e session.Event) {
 	if strings.HasPrefix(e.Tag, "wifi.ap.") {
 		ap := e.Data.(*network.AccessPoint)
 		vend := ""
@@ -35,7 +37,7 @@ func (s EventsStream) viewWiFiEvent(e session.Event) {
 		}
 
 		if e.Tag == "wifi.ap.new" {
-			fmt.Printf("[%s] [%s] WiFi access point %s%s detected as %s%s.\n",
+			fmt.Fprintf(s.output, "[%s] [%s] WiFi access point %s%s detected as %s%s.\n",
 				e.Time.Format(eventTimeFormat),
 				core.Green(e.Tag),
 				core.Bold(ap.ESSID()),
@@ -43,13 +45,13 @@ func (s EventsStream) viewWiFiEvent(e session.Event) {
 				core.Green(ap.BSSID()),
 				core.Dim(vend))
 		} else if e.Tag == "wifi.ap.lost" {
-			fmt.Printf("[%s] [%s] WiFi access point %s (%s) lost.\n",
+			fmt.Fprintf(s.output, "[%s] [%s] WiFi access point %s (%s) lost.\n",
 				e.Time.Format(eventTimeFormat),
 				core.Green(e.Tag),
 				core.Red(ap.ESSID()),
 				ap.BSSID())
 		} else {
-			fmt.Printf("[%s] [%s] %s\n",
+			fmt.Fprintf(s.output, "[%s] [%s] %s\n",
 				e.Time.Format(eventTimeFormat),
 				core.Green(e.Tag),
 				ap.String())
@@ -67,7 +69,7 @@ func (s EventsStream) viewWiFiEvent(e session.Event) {
 			rssi = fmt.Sprintf(" (%d dBm)", probe.RSSI)
 		}
 
-		fmt.Printf("[%s] [%s] Station %s%s is probing for SSID %s%s\n",
+		fmt.Fprintf(s.output, "[%s] [%s] Station %s%s is probing for SSID %s%s\n",
 			e.Time.Format(eventTimeFormat),
 			core.Green(e.Tag),
 			probe.FromAddr.String(),
@@ -77,7 +79,7 @@ func (s EventsStream) viewWiFiEvent(e session.Event) {
 	}
 }
 
-func (s EventsStream) viewEndpointEvent(e session.Event) {
+func (s *EventsStream) viewEndpointEvent(e session.Event) {
 	t := e.Data.(*network.Endpoint)
 	vend := ""
 	name := ""
@@ -93,7 +95,7 @@ func (s EventsStream) viewEndpointEvent(e session.Event) {
 	}
 
 	if e.Tag == "endpoint.new" {
-		fmt.Printf("[%s] [%s] Endpoint %s%s detected as %s%s.\n",
+		fmt.Fprintf(s.output, "[%s] [%s] Endpoint %s%s detected as %s%s.\n",
 			e.Time.Format(eventTimeFormat),
 			core.Green(e.Tag),
 			core.Bold(t.IpAddress),
@@ -101,27 +103,27 @@ func (s EventsStream) viewEndpointEvent(e session.Event) {
 			core.Green(t.HwAddress),
 			core.Dim(vend))
 	} else if e.Tag == "endpoint.lost" {
-		fmt.Printf("[%s] [%s] Endpoint %s%s lost.\n",
+		fmt.Fprintf(s.output, "[%s] [%s] Endpoint %s%s lost.\n",
 			e.Time.Format(eventTimeFormat),
 			core.Green(e.Tag),
 			core.Red(t.IpAddress),
 			core.Dim(vend))
 	} else {
-		fmt.Printf("[%s] [%s] %s\n",
+		fmt.Fprintf(s.output, "[%s] [%s] %s\n",
 			e.Time.Format(eventTimeFormat),
 			core.Green(e.Tag),
 			t.String())
 	}
 }
 
-func (s EventsStream) viewModuleEvent(e session.Event) {
-	fmt.Printf("[%s] [%s] %s\n",
+func (s *EventsStream) viewModuleEvent(e session.Event) {
+	fmt.Fprintf(s.output, "[%s] [%s] %s\n",
 		e.Time.Format(eventTimeFormat),
 		core.Green(e.Tag),
 		e.Data)
 }
 
-func (s EventsStream) viewSnifferEvent(e session.Event) {
+func (s *EventsStream) viewSnifferEvent(e session.Event) {
 	se := e.Data.(SnifferEvent)
 	misc := ""
 
@@ -150,20 +152,30 @@ func (s EventsStream) viewSnifferEvent(e session.Event) {
 		misc = fmt.Sprintf("%s", se.Data)
 	}
 
-	fmt.Printf("[%s] [%s] %s %s\n",
+	fmt.Fprintf(s.output, "[%s] [%s] %s %s\n",
 		e.Time.Format(eventTimeFormat),
 		core.Green(e.Tag),
 		se.Message,
 		misc)
 }
 
-func (s EventsStream) viewSynScanEvent(e session.Event) {
+func (s *EventsStream) viewSynScanEvent(e session.Event) {
 	se := e.Data.(SynScanEvent)
-	fmt.Printf("[%s] [%s] Found open port %d for %s\n",
+	fmt.Fprintf(s.output, "[%s] [%s] Found open port %d for %s\n",
 		e.Time.Format(eventTimeFormat),
 		core.Green(e.Tag),
 		se.Port,
 		core.Bold(se.Address))
+}
+
+func (s *EventsStream) viewUpdateEvent(e session.Event) {
+	update := e.Data.(*github.RepositoryRelease)
+
+	fmt.Fprintf(s.output, "[%s] [%s] An update to version %s is available at %s\n",
+		e.Time.Format(eventTimeFormat),
+		core.Bold(core.Yellow(e.Tag)),
+		core.Bold(*update.TagName),
+		*update.HTMLURL)
 }
 
 func (s *EventsStream) View(e session.Event, refresh bool) {
@@ -179,13 +191,15 @@ func (s *EventsStream) View(e session.Event, refresh bool) {
 		s.viewModuleEvent(e)
 	} else if strings.HasPrefix(e.Tag, "net.sniff.") {
 		s.viewSnifferEvent(e)
-	} else if strings.HasPrefix(e.Tag, "syn.scan.") {
+	} else if e.Tag == "syn.scan" {
 		s.viewSynScanEvent(e)
+	} else if e.Tag == "update.available" {
+		s.viewUpdateEvent(e)
 	} else {
-		fmt.Printf("[%s] [%s] %v\n", e.Time.Format(eventTimeFormat), core.Green(e.Tag), e)
+		fmt.Fprintf(s.output, "[%s] [%s] %v\n", e.Time.Format(eventTimeFormat), core.Green(e.Tag), e)
 	}
 
-	if refresh {
+	if refresh && s.output == os.Stdout {
 		s.Session.Refresh()
 	}
 }

@@ -31,6 +31,10 @@ func NewHttpsProxy(s *session.Session) *HttpsProxy {
 		"8083",
 		"Port to bind the HTTPS proxy to."))
 
+	p.AddParam(session.NewBoolParameter("https.proxy.sslstrip",
+		"false",
+		"Enable or disable SSL stripping."))
+
 	p.AddParam(session.NewStringParameter("https.proxy.certificate",
 		"~/.bettercap-ca.cert.pem",
 		"",
@@ -81,36 +85,31 @@ func (p *HttpsProxy) Configure() error {
 	var scriptPath string
 	var certFile string
 	var keyFile string
+	var stripSSL bool
 
-	if err, address = p.StringParam("https.proxy.address"); err != nil {
+	if p.Running() {
+		return session.ErrAlreadyStarted
+	} else if err, address = p.StringParam("https.proxy.address"); err != nil {
 		return err
-	}
-
-	if err, proxyPort = p.IntParam("https.proxy.port"); err != nil {
+	} else if err, proxyPort = p.IntParam("https.proxy.port"); err != nil {
 		return err
-	}
-
-	if err, httpPort = p.IntParam("https.port"); err != nil {
+	} else if err, httpPort = p.IntParam("https.port"); err != nil {
 		return err
-	}
-
-	if err, certFile = p.StringParam("https.proxy.certificate"); err != nil {
+	} else if err, stripSSL = p.BoolParam("https.proxy.sslstrip"); err != nil {
+		return err
+	} else if err, certFile = p.StringParam("https.proxy.certificate"); err != nil {
 		return err
 	} else if certFile, err = core.ExpandPath(certFile); err != nil {
 		return err
-	}
-
-	if err, keyFile = p.StringParam("https.proxy.key"); err != nil {
+	} else if err, keyFile = p.StringParam("https.proxy.key"); err != nil {
 		return err
 	} else if keyFile, err = core.ExpandPath(keyFile); err != nil {
 		return err
-	}
-
-	if err, scriptPath = p.StringParam("https.proxy.script"); err != nil {
+	} else if err, scriptPath = p.StringParam("https.proxy.script"); err != nil {
 		return err
 	}
 
-	if core.Exists(certFile) == false || core.Exists(keyFile) == false {
+	if !core.Exists(certFile) || !core.Exists(keyFile) {
 		log.Info("Generating proxy certification authority TLS key to %s", keyFile)
 		log.Info("Generating proxy certification authority TLS certificate to %s", certFile)
 		if err := tls.Generate(certFile, keyFile); err != nil {
@@ -121,13 +120,11 @@ func (p *HttpsProxy) Configure() error {
 		log.Info("Loading proxy certification authority TLS certificate from %s", certFile)
 	}
 
-	return p.proxy.ConfigureTLS(address, proxyPort, httpPort, scriptPath, certFile, keyFile)
+	return p.proxy.ConfigureTLS(address, proxyPort, httpPort, scriptPath, certFile, keyFile, stripSSL)
 }
 
 func (p *HttpsProxy) Start() error {
-	if p.Running() == true {
-		return session.ErrAlreadyStarted
-	} else if err := p.Configure(); err != nil {
+	if err := p.Configure(); err != nil {
 		return err
 	}
 

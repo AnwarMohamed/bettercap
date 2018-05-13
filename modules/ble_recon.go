@@ -65,7 +65,7 @@ func NewBLERecon(s *session.Session) *BLERecon {
 	d.AddHandler(session.NewModuleHandler("ble.enum MAC", "ble.enum "+macRegexp,
 		"Enumerate services and characteristics for the given BLE device.",
 		func(args []string) error {
-			if d.isEnumerating() == true {
+			if d.isEnumerating() {
 				return fmt.Errorf("An enumeration for %s is already running, please wait.", d.currDevice.Device.ID())
 			}
 
@@ -111,7 +111,9 @@ func (d *BLERecon) isEnumerating() bool {
 }
 
 func (d *BLERecon) Configure() (err error) {
-	if d.gattDevice == nil {
+	if d.Running() {
+		return session.ErrAlreadyStarted
+	} else if d.gattDevice == nil {
 		log.Info("Initializing BLE device ...")
 
 		// hey Paypal GATT library, could you please just STFU?!
@@ -147,9 +149,7 @@ func (d *BLERecon) pruner() {
 }
 
 func (d *BLERecon) Start() error {
-	if d.Running() {
-		return session.ErrAlreadyStarted
-	} else if err := d.Configure(); err != nil {
+	if err := d.Configure(); err != nil {
 		return err
 	}
 
@@ -174,14 +174,14 @@ func (d *BLERecon) writeBuffer(mac string, uuid gatt.UUID, data []byte) error {
 
 func (d *BLERecon) enumAllTheThings(mac string) error {
 	dev, found := d.Session.BLE.Get(mac)
-	if found == false || dev == nil {
+	if !found || dev == nil {
 		return fmt.Errorf("BLE device with address %s not found.", mac)
 	} else if d.Running() {
 		d.gattDevice.StopScanning()
 	}
 
 	d.setCurrentDevice(dev)
-	if err := d.Configure(); err != nil {
+	if err := d.Configure(); err != nil && err != session.ErrAlreadyStarted {
 		return err
 	}
 
@@ -189,7 +189,7 @@ func (d *BLERecon) enumAllTheThings(mac string) error {
 
 	go func() {
 		time.Sleep(d.connTimeout)
-		if d.isEnumerating() && d.connected == false {
+		if d.isEnumerating() && !d.connected {
 			d.Session.Events.Add("ble.connection.timeout", d.currDevice)
 			d.onPeriphDisconnected(nil, nil)
 		}
@@ -241,8 +241,11 @@ func (d *BLERecon) onPeriphDisconnected(p gatt.Peripheral, err error) {
 }
 
 func (d *BLERecon) onPeriphConnected(p gatt.Peripheral, err error) {
-	// timed out
-	if d.currDevice == nil {
+	if err != nil {
+		log.Warning("Connected to %s but with error: %s", p.ID(), err)
+		return
+	} else if d.currDevice == nil {
+		// timed out
 		log.Warning("Connected to %s but after the timeout :(", p.ID())
 		return
 	}

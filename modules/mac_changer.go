@@ -81,9 +81,9 @@ func (mc *MacChanger) Configure() (err error) {
 }
 
 func (mc *MacChanger) setMac(mac net.HardwareAddr) error {
-	os := runtime.GOOS
-	args := []string{}
+	var args []string
 
+	os := runtime.GOOS
 	if strings.Contains(os, "bsd") || os == "darwin" {
 		args = []string{mc.iface, "ether", mac.String()}
 	} else if os == "linux" || os == "android" {
@@ -101,7 +101,7 @@ func (mc *MacChanger) setMac(mac net.HardwareAddr) error {
 }
 
 func (mc *MacChanger) Start() error {
-	if mc.Running() == true {
+	if mc.Running() {
 		return session.ErrAlreadyStarted
 	} else if err := mc.Configure(); err != nil {
 		return err

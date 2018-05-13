@@ -10,19 +10,33 @@ import (
 	"github.com/bettercap/bettercap/log"
 	"github.com/bettercap/bettercap/session"
 	"github.com/bettercap/bettercap/tls"
+
+	"github.com/gorilla/mux"
+	"github.com/gorilla/websocket"
 )
 
 type RestAPI struct {
 	session.SessionModule
-	server   *http.Server
-	certFile string
-	keyFile  string
+	server       *http.Server
+	username     string
+	password     string
+	certFile     string
+	keyFile      string
+	useWebsocket bool
+	upgrader     websocket.Upgrader
+	quit         chan bool
 }
 
 func NewRestAPI(s *session.Session) *RestAPI {
 	api := &RestAPI{
 		SessionModule: session.NewSessionModule("api.rest", s),
 		server:        &http.Server{},
+		quit:          make(chan bool),
+		useWebsocket:  false,
+		upgrader: websocket.Upgrader{
+			ReadBufferSize:  1024,
+			WriteBufferSize: 1024,
+		},
 	}
 
 	api.AddParam(session.NewStringParameter("api.rest.address",
@@ -53,6 +67,10 @@ func NewRestAPI(s *session.Session) *RestAPI {
 		"~/.bcap-api.rest.key.pem",
 		"",
 		"API TLS key"))
+
+	api.AddParam(session.NewBoolParameter("api.rest.websocket",
+		"false",
+		"If true the /api/events route will be available as a websocket endpoint instead of HTTPS."))
 
 	api.AddHandler(session.NewModuleHandler("api.rest on", "",
 		"Start REST API server.",
@@ -94,7 +112,9 @@ func (api *RestAPI) Configure() error {
 	var ip string
 	var port int
 
-	if err, ip = api.StringParam("api.rest.address"); err != nil {
+	if api.Running() {
+		return session.ErrAlreadyStarted
+	} else if err, ip = api.StringParam("api.rest.address"); err != nil {
 		return err
 	} else if err, port = api.IntParam("api.rest.port"); err != nil {
 		return err
@@ -106,11 +126,13 @@ func (api *RestAPI) Configure() error {
 		return err
 	} else if api.keyFile, err = core.ExpandPath(api.keyFile); err != nil {
 		return err
-	} else if err, ApiUsername = api.StringParam("api.rest.username"); err != nil {
+	} else if err, api.username = api.StringParam("api.rest.username"); err != nil {
 		return err
-	} else if err, ApiPassword = api.StringParam("api.rest.password"); err != nil {
+	} else if err, api.password = api.StringParam("api.rest.password"); err != nil {
 		return err
-	} else if core.Exists(api.certFile) == false || core.Exists(api.keyFile) == false {
+	} else if err, api.useWebsocket = api.BoolParam("api.rest.websocket"); err != nil {
+		return err
+	} else if !core.Exists(api.certFile) || !core.Exists(api.keyFile) {
 		log.Info("Generating TLS key to %s", api.keyFile)
 		log.Info("Generating TLS certificate to %s", api.certFile)
 		if err := tls.Generate(api.certFile, api.keyFile); err != nil {
@@ -123,10 +145,22 @@ func (api *RestAPI) Configure() error {
 
 	api.server.Addr = fmt.Sprintf("%s:%d", ip, port)
 
-	router := http.NewServeMux()
+	router := mux.NewRouter()
 
-	router.HandleFunc("/api/session", SessionRoute)
-	router.HandleFunc("/api/events", EventsRoute)
+	router.HandleFunc("/api/events", api.eventsRoute)
+	router.HandleFunc("/api/session", api.sessionRoute)
+	router.HandleFunc("/api/session/ble", api.sessionRoute)
+	router.HandleFunc("/api/session/ble/{mac}", api.sessionRoute)
+	router.HandleFunc("/api/session/env", api.sessionRoute)
+	router.HandleFunc("/api/session/gateway", api.sessionRoute)
+	router.HandleFunc("/api/session/interface", api.sessionRoute)
+	router.HandleFunc("/api/session/lan", api.sessionRoute)
+	router.HandleFunc("/api/session/lan/{mac}", api.sessionRoute)
+	router.HandleFunc("/api/session/options", api.sessionRoute)
+	router.HandleFunc("/api/session/packets", api.sessionRoute)
+	router.HandleFunc("/api/session/started-at", api.sessionRoute)
+	router.HandleFunc("/api/session/wifi", api.sessionRoute)
+	router.HandleFunc("/api/session/wifi/{mac}", api.sessionRoute)
 
 	api.server.Handler = router
 
@@ -134,9 +168,7 @@ func (api *RestAPI) Configure() error {
 }
 
 func (api *RestAPI) Start() error {
-	if api.Running() == true {
-		return session.ErrAlreadyStarted
-	} else if err := api.Configure(); err != nil {
+	if err := api.Configure(); err != nil {
 		return err
 	}
 
@@ -153,6 +185,10 @@ func (api *RestAPI) Start() error {
 
 func (api *RestAPI) Stop() error {
 	return api.SetRunning(false, func() {
+		go func() {
+			api.quit <- true
+		}()
+
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		api.server.Shutdown(ctx)

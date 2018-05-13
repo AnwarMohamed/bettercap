@@ -1,9 +1,7 @@
 package modules
 
 import (
-	"bytes"
 	"fmt"
-	"net"
 	"time"
 
 	"github.com/bettercap/bettercap/session"
@@ -92,26 +90,11 @@ func (s Sniffer) Author() string {
 	return "Simone Margaritelli <evilsocket@protonmail.com>"
 }
 
-func same(a, b net.HardwareAddr) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	for idx, v := range a {
-		if b[idx] != v {
-			return false
-		}
-	}
-
-	return true
-}
-
 func (s Sniffer) isLocalPacket(packet gopacket.Packet) bool {
-	eth := packet.Layer(layers.LayerTypeEthernet)
-	if eth != nil {
-		eth, _ := eth.(*layers.Ethernet)
-		ifHw := s.Session.Interface.HW
-		if bytes.Compare(eth.SrcMAC, ifHw) == 0 || bytes.Compare(eth.DstMAC, ifHw) == 0 {
+	ipl := packet.Layer(layers.LayerTypeIPv4)
+	if ipl != nil {
+		ip, _ := ipl.(*layers.IPv4)
+		if ip.SrcIP.Equal(s.Session.Interface.IP) || ip.DstIP.Equal(s.Session.Interface.IP) {
 			return true
 		}
 	}
@@ -119,7 +102,7 @@ func (s Sniffer) isLocalPacket(packet gopacket.Packet) bool {
 }
 
 func (s *Sniffer) onPacketMatched(pkt gopacket.Packet) {
-	if mainParser(pkt, s.Ctx.Verbose) == true {
+	if mainParser(pkt, s.Ctx.Verbose) {
 		s.Stats.NumDumped++
 	}
 }
@@ -127,7 +110,9 @@ func (s *Sniffer) onPacketMatched(pkt gopacket.Packet) {
 func (s *Sniffer) Configure() error {
 	var err error
 
-	if err, s.Ctx = s.GetContext(); err != nil {
+	if s.Running() {
+		return session.ErrAlreadyStarted
+	} else if err, s.Ctx = s.GetContext(); err != nil {
 		if s.Ctx != nil {
 			s.Ctx.Close()
 			s.Ctx = nil
@@ -139,9 +124,7 @@ func (s *Sniffer) Configure() error {
 }
 
 func (s *Sniffer) Start() error {
-	if s.Running() == true {
-		return session.ErrAlreadyStarted
-	} else if err := s.Configure(); err != nil {
+	if err := s.Configure(); err != nil {
 		return err
 	}
 
@@ -151,7 +134,7 @@ func (s *Sniffer) Start() error {
 		src := gopacket.NewPacketSource(s.Ctx.Handle, s.Ctx.Handle.LinkType())
 		s.pktSourceChan = src.Packets()
 		for packet := range s.pktSourceChan {
-			if s.Running() == false {
+			if !s.Running() {
 				break
 			}
 
@@ -166,9 +149,9 @@ func (s *Sniffer) Start() error {
 				s.Stats.NumLocal++
 			}
 
-			if s.Ctx.DumpLocal == true || isLocal == false {
+			if s.Ctx.DumpLocal || !isLocal {
 				data := packet.Data()
-				if s.Ctx.Compiled == nil || s.Ctx.Compiled.Match(data) == true {
+				if s.Ctx.Compiled == nil || s.Ctx.Compiled.Match(data) {
 					s.Stats.NumMatched++
 
 					s.onPacketMatched(packet)
@@ -180,12 +163,16 @@ func (s *Sniffer) Start() error {
 				}
 			}
 		}
+
+		s.pktSourceChan = nil
 	})
 }
 
 func (s *Sniffer) Stop() error {
 	return s.SetRunning(false, func() {
-		s.pktSourceChan <- nil
+		if s.pktSourceChan != nil {
+			s.pktSourceChan <- nil
+		}
 		s.Ctx.Close()
 	})
 }

@@ -1,7 +1,9 @@
 package session
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -35,7 +37,7 @@ func (s *Session) helpHandler(args []string, sess *Session) error {
 			fmt.Printf("  "+core.Yellow(pad)+" : %s\n", h.Name, h.Description)
 		}
 
-		fmt.Printf(core.Bold("\nModules\n\n"))
+		fmt.Println(core.Bold("\nModules\n"))
 
 		maxLen = 0
 		for _, m := range s.Modules {
@@ -83,13 +85,13 @@ func (s *Session) helpHandler(args []string, sess *Session) error {
 		}
 
 		for _, h := range handlers {
-			fmt.Printf(h.Help(maxLen))
+			fmt.Print(h.Help(maxLen))
 		}
 		fmt.Println()
 
 		params := m.Parameters()
 		if len(params) > 0 {
-			fmt.Printf("  Parameters\n\n")
+			fmt.Print("  Parameters\n\n")
 			maxLen := 0
 			for _, h := range params {
 				len := len(h.Name)
@@ -99,7 +101,7 @@ func (s *Session) helpHandler(args []string, sess *Session) error {
 			}
 
 			for _, p := range params {
-				fmt.Printf(p.Help(maxLen))
+				fmt.Print(p.Help(maxLen))
 			}
 			fmt.Println()
 		}
@@ -110,7 +112,7 @@ func (s *Session) helpHandler(args []string, sess *Session) error {
 
 func (s *Session) activeHandler(args []string, sess *Session) error {
 	for _, m := range s.Modules {
-		if m.Running() == false {
+		if !m.Running() {
 			continue
 		}
 
@@ -153,13 +155,23 @@ func (s *Session) sleepHandler(args []string, sess *Session) error {
 
 func (s *Session) getHandler(args []string, sess *Session) error {
 	key := args[0]
-	if strings.Contains(key, "*")  {
+	if strings.Contains(key, "*") {
 		prev_ns := ""
 
 		fmt.Println()
-		last := len(key) - 1 
+		last := len(key) - 1
 		prefix := key[:last]
-		for _, k := range s.Env.Sorted() {
+		sortedKeys := s.Env.Sorted()
+		padding := 0
+
+		for _, k := range sortedKeys {
+			l := len(k)
+			if l > padding {
+				padding = l
+			}
+		}
+
+		for _, k := range sortedKeys {
 			if strings.HasPrefix(k, prefix) {
 				ns := ""
 				toks := strings.Split(k, ".")
@@ -172,11 +184,11 @@ func (s *Session) getHandler(args []string, sess *Session) error {
 					prev_ns = ns
 				}
 
-				fmt.Printf("  %"+strconv.Itoa(s.Env.Padding)+"s: '%s'\n", k, s.Env.Data[k])
+				fmt.Printf("  %"+strconv.Itoa(padding)+"s: '%s'\n", k, s.Env.Data[k])
 			}
 		}
 		fmt.Println()
-	} else if found, value := s.Env.Get(key); found == true {
+	} else if found, value := s.Env.Get(key); found {
 		fmt.Println()
 		fmt.Printf("  %s: '%s'\n", key, value)
 		fmt.Println()
@@ -191,6 +203,23 @@ func (s *Session) setHandler(args []string, sess *Session) error {
 	key := args[0]
 	value := args[1]
 
+	if value == "\"\"" {
+		value = ""
+	}
+
+	s.Env.Set(key, value)
+	return nil
+}
+
+func (s *Session) readHandler(args []string, sess *Session) error {
+	key := args[0]
+	prompt := args[1]
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("%s ", prompt)
+
+	value, _ := reader.ReadString('\n')
+	value = core.Trim(value)
 	if value == "\"\"" {
 		value = ""
 	}
@@ -226,7 +255,7 @@ func (s *Session) aliasHandler(args []string, sess *Session) error {
 	mac := args[0]
 	alias := core.Trim(args[1])
 
-	if s.Lan.SetAliasFor(mac, alias) == true {
+	if s.Lan.SetAliasFor(mac, alias) {
 		return nil
 	} else {
 		return fmt.Errorf("Could not find endpoint %s", mac)
@@ -247,7 +276,7 @@ func (s *Session) registerCoreHandlers() {
 			prefix = core.Trim(prefix[4:])
 			modNames := []string{""}
 			for _, m := range s.Modules {
-				if prefix == "" || strings.HasPrefix(m.Name(), prefix) == true {
+				if prefix == "" || strings.HasPrefix(m.Name(), prefix) {
 					modNames = append(modNames, m.Name())
 				}
 			}
@@ -280,7 +309,7 @@ func (s *Session) registerCoreHandlers() {
 			prefix = core.Trim(prefix[3:])
 			varNames := []string{""}
 			for key := range s.Env.Data {
-				if prefix == "" || strings.HasPrefix(key, prefix) == true {
+				if prefix == "" || strings.HasPrefix(key, prefix) {
 					varNames = append(varNames, key)
 				}
 			}
@@ -295,12 +324,18 @@ func (s *Session) registerCoreHandlers() {
 			prefix = core.Trim(prefix[3:])
 			varNames := []string{""}
 			for key := range s.Env.Data {
-				if prefix == "" || strings.HasPrefix(key, prefix) == true {
+				if prefix == "" || strings.HasPrefix(key, prefix) {
 					varNames = append(varNames, key)
 				}
 			}
 			return varNames
 		})))
+
+	s.addHandler(NewCommandHandler("read VARIABLE PROMPT",
+		`^read\s+([^\s]+)\s+(.+)$`,
+		"Show a PROMPT to ask the user for input that will be saved inside VARIABLE.",
+		s.readHandler),
+		readline.PcItem("read"))
 
 	s.addHandler(NewCommandHandler("clear",
 		"^(clear|cls)$",
@@ -318,8 +353,7 @@ func (s *Session) registerCoreHandlers() {
 				prefix = "."
 			}
 
-			files := []string{}
-			files, _ = filepath.Glob(prefix + "*")
+			files, _ := filepath.Glob(prefix + "*")
 			return files
 		})))
 
@@ -337,7 +371,7 @@ func (s *Session) registerCoreHandlers() {
 			prefix = core.Trim(prefix[5:])
 			macs := []string{""}
 			s.Lan.EachHost(func(mac string, e *network.Endpoint) {
-				if prefix == "" || strings.HasPrefix(mac, prefix) == true {
+				if prefix == "" || strings.HasPrefix(mac, prefix) {
 					macs = append(macs, mac)
 				}
 			})

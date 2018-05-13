@@ -59,7 +59,9 @@ func (t *Ticker) Configure() error {
 	var commands string
 	var period int
 
-	if err, commands = t.StringParam("ticker.commands"); err != nil {
+	if t.Running() {
+		return session.ErrAlreadyStarted
+	} else if err, commands = t.StringParam("ticker.commands"); err != nil {
 		return err
 	} else if err, period = t.IntParam("ticker.period"); err != nil {
 		return err
@@ -72,17 +74,15 @@ func (t *Ticker) Configure() error {
 }
 
 func (t *Ticker) Start() error {
-	if t.Running() == true {
-		return session.ErrAlreadyStarted
-	} else if err := t.Configure(); err != nil {
+	if err := t.Configure(); err != nil {
 		return err
 	}
 
 	return t.SetRunning(true, func() {
 		log.Info("Ticker running with period %.fs.", t.Period.Seconds())
-		tick := time.Tick(t.Period)
-		for range tick {
-			if t.Running() == false {
+		tick := time.NewTicker(t.Period)
+		for range tick.C {
+			if !t.Running() {
 				break
 			}
 

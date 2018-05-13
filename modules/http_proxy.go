@@ -33,6 +33,10 @@ func NewHttpProxy(s *session.Session) *HttpProxy {
 		"",
 		"Path of a proxy JS script."))
 
+	p.AddParam(session.NewBoolParameter("http.proxy.sslstrip",
+		"false",
+		"Enable or disable SSL stripping."))
+
 	p.AddHandler(session.NewModuleHandler("http.proxy on", "",
 		"Start HTTP proxy.",
 		func(args []string) error {
@@ -66,30 +70,27 @@ func (p *HttpProxy) Configure() error {
 	var proxyPort int
 	var httpPort int
 	var scriptPath string
+	var stripSSL bool
 
-	if err, address = p.StringParam("http.proxy.address"); err != nil {
+	if p.Running() {
+		return session.ErrAlreadyStarted
+	} else if err, address = p.StringParam("http.proxy.address"); err != nil {
+		return err
+	} else if err, proxyPort = p.IntParam("http.proxy.port"); err != nil {
+		return err
+	} else if err, httpPort = p.IntParam("http.port"); err != nil {
+		return err
+	} else if err, scriptPath = p.StringParam("http.proxy.script"); err != nil {
+		return err
+	} else if err, stripSSL = p.BoolParam("http.proxy.sslstrip"); err != nil {
 		return err
 	}
 
-	if err, proxyPort = p.IntParam("http.proxy.port"); err != nil {
-		return err
-	}
-
-	if err, httpPort = p.IntParam("http.port"); err != nil {
-		return err
-	}
-
-	if err, scriptPath = p.StringParam("http.proxy.script"); err != nil {
-		return err
-	}
-
-	return p.proxy.Configure(address, proxyPort, httpPort, scriptPath)
+	return p.proxy.Configure(address, proxyPort, httpPort, scriptPath, stripSSL)
 }
 
 func (p *HttpProxy) Start() error {
-	if p.Running() == true {
-		return session.ErrAlreadyStarted
-	} else if err := p.Configure(); err != nil {
+	if err := p.Configure(); err != nil {
 		return err
 	}
 

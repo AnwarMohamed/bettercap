@@ -1,7 +1,6 @@
 package packets
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"sync"
@@ -65,7 +64,7 @@ func NewQueue(iface *network.Endpoint) (q *Queue, err error) {
 		pktCb:  nil,
 	}
 
-	if q.active == true {
+	if q.active {
 		if q.handle, err = pcap.OpenLive(iface.Name(), 1024, true, pcap.BlockForever); err != nil {
 			return
 		}
@@ -104,10 +103,10 @@ func (q *Queue) trackProtocols(pkt gopacket.Packet) {
 
 		q.Lock()
 		name := proto.String()
-		if _, found := q.Protos[name]; found == false {
+		if _, found := q.Protos[name]; !found {
 			q.Protos[name] = 1
 		} else {
-			q.Protos[name] += 1
+			q.Protos[name]++
 		}
 		q.Unlock()
 	}
@@ -126,7 +125,7 @@ func (q *Queue) trackActivity(eth *layers.Ethernet, ip4 *layers.IPv4, address ne
 
 	// initialize or update stats
 	addr := address.String()
-	if _, found := q.Traffic[addr]; found == false {
+	if _, found := q.Traffic[addr]; !found {
 		if isSent {
 			q.Traffic[addr] = &Traffic{Sent: pktSize}
 		} else {
@@ -141,9 +140,31 @@ func (q *Queue) trackActivity(eth *layers.Ethernet, ip4 *layers.IPv4, address ne
 	}
 }
 
+func (q *Queue) TrackPacket(size uint64) {
+	q.Stats.Lock()
+	defer q.Stats.Unlock()
+
+	q.Stats.PktReceived++
+	q.Stats.Received += size
+}
+
+func (q *Queue) TrackSent(size uint64) {
+	q.Stats.Lock()
+	defer q.Stats.Unlock()
+
+	q.Stats.Sent += size
+}
+
+func (q *Queue) TrackError() {
+	q.Stats.Lock()
+	defer q.Stats.Unlock()
+
+	q.Stats.Errors++
+}
+
 func (q *Queue) worker() {
 	for pkt := range q.srcChannel {
-		if q.active == false {
+		if !q.active {
 			return
 		}
 
@@ -151,13 +172,7 @@ func (q *Queue) worker() {
 
 		pktSize := uint64(len(pkt.Data()))
 
-		q.Stats.Lock()
-
-		q.Stats.PktReceived++
-		q.Stats.Received += pktSize
-
-		q.Stats.Unlock()
-
+		q.TrackPacket(pktSize)
 		q.onPacketCallback(pkt)
 
 		// decode eth and ipv4 layers
@@ -172,16 +187,16 @@ func (q *Queue) worker() {
 			// we manage to sniff
 
 			// something coming from someone on the LAN
-			isFromMe := bytes.Compare(q.iface.IP, ip4.SrcIP) == 0
+			isFromMe := q.iface.IP.Equal(ip4.SrcIP)
 			isFromLAN := q.iface.Net.Contains(ip4.SrcIP)
-			if isFromMe == false && isFromLAN {
+			if !isFromMe && isFromLAN {
 				q.trackActivity(eth, ip4, ip4.SrcIP, pktSize, true)
 			}
 
 			// something going to someone on the LAN
-			isToMe := bytes.Compare(q.iface.IP, ip4.DstIP) == 0
+			isToMe := q.iface.IP.Equal(ip4.DstIP)
 			isToLAN := q.iface.Net.Contains(ip4.DstIP)
-			if isToMe == false && isToLAN {
+			if !isToMe && isToLAN {
 				q.trackActivity(eth, ip4, ip4.DstIP, pktSize, false)
 			}
 		}
@@ -192,7 +207,7 @@ func (q *Queue) Send(raw []byte) error {
 	q.Lock()
 	defer q.Unlock()
 
-	if q.active == false {
+	if !q.active {
 		return fmt.Errorf("Packet queue is not active.")
 	}
 
@@ -200,14 +215,10 @@ func (q *Queue) Send(raw []byte) error {
 	defer q.writes.Done()
 
 	if err := q.handle.WritePacketData(raw); err != nil {
-		q.Stats.Lock()
-		q.Stats.Errors++
-		q.Stats.Unlock()
+		q.TrackError()
 		return err
 	} else {
-		q.Stats.Lock()
-		q.Stats.Sent += uint64(len(raw))
-		q.Stats.Unlock()
+		q.TrackSent(uint64(len(raw)))
 	}
 
 	return nil
@@ -217,7 +228,7 @@ func (q *Queue) Stop() {
 	q.Lock()
 	defer q.Unlock()
 
-	if q.active == true {
+	if q.active {
 		// wait for write operations to be completed
 		q.writes.Wait()
 		// signal the main loop to exit and close the handle

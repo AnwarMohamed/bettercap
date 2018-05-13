@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
 
 	"github.com/bettercap/bettercap/core"
@@ -15,12 +14,14 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+
+	"github.com/gobwas/glob"
 )
 
 type DNSSpoofer struct {
 	session.SessionModule
 	Handle        *pcap.Handle
-	Domains       []string
+	Domains       []glob.Glob
 	Address       net.IP
 	All           bool
 	waitGroup     *sync.WaitGroup
@@ -32,6 +33,7 @@ func NewDNSSpoofer(s *session.Session) *DNSSpoofer {
 		SessionModule: session.NewSessionModule("dns.spoof", s),
 		Handle:        nil,
 		All:           false,
+		Domains:       make([]glob.Glob, 0),
 		waitGroup:     &sync.WaitGroup{},
 	}
 
@@ -79,6 +81,11 @@ func (s DNSSpoofer) Author() string {
 func (s *DNSSpoofer) Configure() error {
 	var err error
 	var addr string
+	var domains []string
+
+	if s.Running() {
+		return session.ErrAlreadyStarted
+	}
 
 	if s.Handle, err = pcap.OpenLive(s.Session.Interface.Name(), 65536, true, pcap.BlockForever); err != nil {
 		return err
@@ -93,8 +100,16 @@ func (s *DNSSpoofer) Configure() error {
 		return err
 	}
 
-	if err, s.Domains = s.ListParam("dns.spoof.domains"); err != nil {
+	if err, domains = s.ListParam("dns.spoof.domains"); err != nil {
 		return err
+	}
+
+	for _, domain := range domains {
+		if expr, err := glob.Compile(domain); err != nil {
+			return fmt.Errorf("'%s' is not a valid domain glob expression: %s", domain, err)
+		} else {
+			s.Domains = append(s.Domains, expr)
+		}
 	}
 
 	if err, addr = s.StringParam("dns.spoof.address"); err != nil {
@@ -103,7 +118,7 @@ func (s *DNSSpoofer) Configure() error {
 
 	s.Address = net.ParseIP(addr)
 
-	if s.Session.Firewall.IsForwardingEnabled() == false {
+	if !s.Session.Firewall.IsForwardingEnabled() {
 		log.Info("Enabling forwarding.")
 		s.Session.Firewall.EnableForwarding(true)
 	}
@@ -115,7 +130,7 @@ func (s *DNSSpoofer) dnsReply(pkt gopacket.Packet, peth *layers.Ethernet, pudp *
 	redir := fmt.Sprintf("(->%s)", s.Address)
 	who := target.String()
 
-	if t, found := s.Session.Lan.Get(target.String()); found == true {
+	if t, found := s.Session.Lan.Get(target.String()); found {
 		who = t.String()
 	}
 
@@ -130,6 +145,7 @@ func (s *DNSSpoofer) dnsReply(pkt gopacket.Packet, peth *layers.Ethernet, pudp *
 		return
 	}
 
+	var eType layers.EthernetType
 	var ipv6 bool
 
 	if nlayer.LayerType() == layers.LayerTypeIPv4 {
@@ -137,18 +153,20 @@ func (s *DNSSpoofer) dnsReply(pkt gopacket.Packet, peth *layers.Ethernet, pudp *
 		src = pip.DstIP
 		dst = pip.SrcIP
 		ipv6 = false
+		eType = layers.EthernetTypeIPv4
 
 	} else {
 		pip := pkt.Layer(layers.LayerTypeIPv6).(*layers.IPv6)
 		src = pip.DstIP
 		dst = pip.SrcIP
 		ipv6 = true
+		eType = layers.EthernetTypeIPv6
 	}
 
 	eth := layers.Ethernet{
 		SrcMAC:       peth.DstMAC,
 		DstMAC:       target,
-		EthernetType: layers.EthernetTypeIPv6,
+		EthernetType: eType,
 	}
 
 	answers := make([]layers.DNSResourceRecord, 0)
@@ -174,7 +192,7 @@ func (s *DNSSpoofer) dnsReply(pkt gopacket.Packet, peth *layers.Ethernet, pudp *
 
 	var raw []byte
 
-	if ipv6 == true {
+	if ipv6 {
 		ip6 := layers.IPv6{
 			Version:    6,
 			NextHeader: layers.IPProtocolUDP,
@@ -225,12 +243,8 @@ func (s *DNSSpoofer) dnsReply(pkt gopacket.Packet, peth *layers.Ethernet, pudp *
 }
 
 func (s *DNSSpoofer) shouldSpoof(domain string) bool {
-	if len(s.Domains) == 1 && s.Domains[0] == "*" {
-		return true
-	}
-
-	for _, d := range s.Domains {
-		if strings.HasSuffix(domain, d) == true {
+	for _, expr := range s.Domains {
+		if expr.Match(domain) {
 			return true
 		}
 	}
@@ -245,14 +259,13 @@ func (s *DNSSpoofer) onPacket(pkt gopacket.Packet) {
 	}
 
 	eth := typeEth.(*layers.Ethernet)
-
-	if s.All || bytes.Compare(eth.DstMAC, s.Session.Interface.HW) == 0 {
+	if s.All || bytes.Equal(eth.DstMAC, s.Session.Interface.HW) {
 		dns, parsed := pkt.Layer(layers.LayerTypeDNS).(*layers.DNS)
 		if parsed && dns.OpCode == layers.DNSOpCodeQuery && len(dns.Questions) > 0 && len(dns.Answers) == 0 {
 			udp := typeUDP.(*layers.UDP)
 			for _, q := range dns.Questions {
 				qName := string(q.Name)
-				if s.shouldSpoof(qName) == true {
+				if s.shouldSpoof(qName) {
 					s.dnsReply(pkt, eth, udp, qName, dns, eth.SrcMAC)
 					break
 				} else {
@@ -264,9 +277,7 @@ func (s *DNSSpoofer) onPacket(pkt gopacket.Packet) {
 }
 
 func (s *DNSSpoofer) Start() error {
-	if s.Running() == true {
-		return session.ErrAlreadyStarted
-	} else if err := s.Configure(); err != nil {
+	if err := s.Configure(); err != nil {
 		return err
 	}
 
@@ -277,7 +288,7 @@ func (s *DNSSpoofer) Start() error {
 		src := gopacket.NewPacketSource(s.Handle, s.Handle.LinkType())
 		s.pktSourceChan = src.Packets()
 		for packet := range s.pktSourceChan {
-			if s.Running() == false {
+			if !s.Running() {
 				break
 			}
 

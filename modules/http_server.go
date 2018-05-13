@@ -89,6 +89,10 @@ func (httpd *HttpServer) Configure() error {
 	var certFile string
 	var keyFile string
 
+	if httpd.Running() {
+		return session.ErrAlreadyStarted
+	}
+
 	if err, path = httpd.StringParam("http.server.path"); err != nil {
 		return err
 	}
@@ -126,7 +130,7 @@ func (httpd *HttpServer) Configure() error {
 	}
 
 	if certFile != "" && keyFile != "" {
-		if core.Exists(certFile) == false || core.Exists(keyFile) == false {
+		if !core.Exists(certFile) || !core.Exists(keyFile) {
 			log.Info("Generating server TLS key to %s", keyFile)
 			log.Info("Generating server TLS certificate to %s", certFile)
 			if err := tls.Generate(certFile, keyFile); err != nil {
@@ -145,15 +149,12 @@ func (httpd *HttpServer) Configure() error {
 }
 
 func (httpd *HttpServer) Start() error {
-	if httpd.Running() == true {
-		return session.ErrAlreadyStarted
-	} else if err := httpd.Configure(); err != nil {
+	if err := httpd.Configure(); err != nil {
 		return err
 	}
 
 	return httpd.SetRunning(true, func() {
 		var err error
-
 		if httpd.isTLS() {
 			log.Info("HTTPS server starting on https://%s", httpd.server.Addr)
 			err = httpd.server.ListenAndServeTLS(httpd.certFile, httpd.keyFile)

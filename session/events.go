@@ -39,18 +39,39 @@ func (e Event) Label() string {
 type EventPool struct {
 	sync.Mutex
 
-	NewEvents chan Event
 	debug     bool
 	silent    bool
 	events    []Event
+	listeners []chan Event
 }
 
 func NewEventPool(debug bool, silent bool) *EventPool {
 	return &EventPool{
-		NewEvents: make(chan Event, 0xff),
 		debug:     debug,
 		silent:    silent,
 		events:    make([]Event, 0),
+		listeners: make([]chan Event, 0),
+	}
+}
+
+func (p *EventPool) Listen() <-chan Event {
+	p.Lock()
+	defer p.Unlock()
+	l := make(chan Event)
+	p.listeners = append(p.listeners, l)
+	return l
+}
+
+func (p *EventPool) Unlisten(listener <-chan Event) {
+	p.Lock()
+	defer p.Unlock()
+
+	for i, l := range p.listeners {
+		if l == listener {
+			close(l)
+			p.listeners = append(p.listeners[:i], p.listeners[i+1:]...)
+			return
+		}
 	}
 }
 
@@ -69,15 +90,20 @@ func (p *EventPool) SetDebug(d bool) {
 func (p *EventPool) Add(tag string, data interface{}) {
 	p.Lock()
 	defer p.Unlock()
+
 	e := NewEvent(tag, data)
 	p.events = append([]Event{e}, p.events...)
-	p.NewEvents <- e
+
+	// broadcast the event to every listener
+	for _, l := range p.listeners {
+		l <- e
+	}
 }
 
 func (p *EventPool) Log(level int, format string, args ...interface{}) {
-	if level == core.DEBUG && p.debug == false {
+	if level == core.DEBUG && !p.debug {
 		return
-	} else if level < core.ERROR && p.silent == true {
+	} else if level < core.ERROR && p.silent {
 		return
 	}
 

@@ -13,6 +13,16 @@ host_dep() {
     ping -c 1 $HOST > /dev/null || { echo "@ Virtual machine host $HOST not visible !"; exit 1; }
 }
 
+create_exe_archive() {
+    bin_dep 'zip'
+
+    OUTPUT=$1
+
+    echo "@ Creating archive $OUTPUT ..."
+    zip -j "$OUTPUT" bettercap.exe ../README.md ../LICENSE.md > /dev/null
+    rm -rf bettercap bettercap.exe
+}
+
 create_archive() {
     bin_dep 'zip'
 
@@ -53,9 +63,9 @@ xcompile_pcap() {
     make CFLAGS='-w' -j4 > /dev/null
 }
 
-build_linux_amd64_static() {
+build_linux_amd64() {
     echo "@ Building linux/amd64 ..."
-    go build --ldflags '-linkmode external -extldflags "-static -s -w"' -v -o bettercap ..
+    go build -o bettercap ..
 }
 
 build_linux_arm7_static() {
@@ -67,6 +77,17 @@ build_linux_arm7_static() {
     echo "@ Building linux/arm7 ..."
     cd "$OLD"
     env CC=arm-linux-gnueabi-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm GOARM=7 CGO_LDFLAGS="$CROSS_LIB" go build -o bettercap ..
+}
+
+build_linux_arm7hf_static() {
+    OLD=$(pwd)
+
+    download_pcap
+    xcompile_pcap 'arm' 'arm-linux-gnueabihf' 'arm-linux-gnueabihf-gcc'
+
+    echo "@ Building linux/arm7hf ..."
+    cd "$OLD"
+    env CC=arm-linux-gnueabihf-gcc CGO_ENABLED=1 GOOS=linux GOARCH=arm GOARM=7 CGO_LDFLAGS="$CROSS_LIB" go build -o bettercap ..
 }
 
 build_linux_mips_static() {
@@ -161,17 +182,16 @@ mkdir $BUILD_FOLDER
 cd $BUILD_FOLDER
 
 
-build_linux_amd64_static && create_archive bettercap_linux_amd64_$VERSION.zip
+build_linux_amd64 && create_archive bettercap_linux_amd64_$VERSION.zip
+build_macos_amd64 && create_archive bettercap_macos_amd64_$VERSION.zip
+build_android_arm && create_archive bettercap_android_arm_$VERSION.zip
+build_windows_amd64 && create_exe_archive bettercap_windows_amd64_$VERSION.zip
 build_linux_arm7_static && create_archive bettercap_linux_arm7_$VERSION.zip
+# build_linux_arm7hf_static && create_archive bettercap_linux_arm7hf_$VERSION.zip
 build_linux_mips_static && create_archive bettercap_linux_mips_$VERSION.zip
 build_linux_mipsle_static && create_archive bettercap_linux_mipsle_$VERSION.zip
 build_linux_mips64_static && create_archive bettercap_linux_mips64_$VERSION.zip
 build_linux_mips64le_static && create_archive bettercap_linux_mips64le_$VERSION.zip
-
-# these are still not static :(
-build_macos_amd64 && create_archive bettercap_macos_amd64_$VERSION.zip
-build_android_arm && create_archive bettercap_android_arm_$VERSION.zip
-build_windows_amd64 && create_archive bettercap_windows_amd64_$VERSION.zip
 sha256sum * > checksums.txt
 
 echo

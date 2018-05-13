@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/bettercap/bettercap/core"
+
+	"github.com/malfunkt/iprange"
 )
 
 var ErrNoIfaces = errors.New("No active interfaces found.")
@@ -22,9 +24,32 @@ const (
 )
 
 var (
-	BroadcastHw   = []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-	IPv4Validator = regexp.MustCompile("^[0-9\\.]+/?\\d*$")
+	BroadcastHw        = []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	IPv4Validator      = regexp.MustCompile(`^[0-9\.]+/?\d*$`)
+	IPv4RangeValidator = regexp.MustCompile(`^[0-9\.\-]+/?\d*$`)
+	MACValidator       = regexp.MustCompile(`(?i)^[a-f0-9]{1,2}:[a-f0-9]{1,2}:[a-f0-9]{1,2}:[a-f0-9]{1,2}:[a-f0-9]{1,2}:[a-f0-9]{1,2}$`)
+	// lulz this sounds like a hamburger
+	macParser   = regexp.MustCompile(`(?i)([a-f0-9]{1,2}:[a-f0-9]{1,2}:[a-f0-9]{1,2}:[a-f0-9]{1,2}:[a-f0-9]{1,2}:[a-f0-9]{1,2})`)
+	aliasParser = regexp.MustCompile(`(?i)([a-z_][a-z_0-9]+)`)
 )
+
+func IsZeroMac(mac net.HardwareAddr) bool {
+	for _, b := range mac {
+		if b != 0x00 {
+			return false
+		}
+	}
+	return true
+}
+
+func IsBroadcastMac(mac net.HardwareAddr) bool {
+	for _, b := range mac {
+		if b != 0xff {
+			return false
+		}
+	}
+	return true
+}
 
 func NormalizeMac(mac string) string {
 	var parts []string
@@ -42,6 +67,57 @@ func NormalizeMac(mac string) string {
 	return strings.ToLower(strings.Join(parts, ":"))
 }
 
+func ParseTargets(targets string, aliasMap *Aliases) (ips []net.IP, macs []net.HardwareAddr, err error) {
+	ips = make([]net.IP, 0)
+	macs = make([]net.HardwareAddr, 0)
+
+	if targets = core.Trim(targets); targets == "" {
+		return
+	}
+
+	// first isolate MACs and parse them
+	for _, mac := range macParser.FindAllString(targets, -1) {
+		mac = NormalizeMac(mac)
+		hw, err := net.ParseMAC(mac)
+		if err != nil {
+			return nil, nil, fmt.Errorf("Error while parsing MAC '%s': %s", mac, err)
+		}
+
+		macs = append(macs, hw)
+		targets = strings.Replace(targets, mac, "", -1)
+	}
+	targets = strings.Trim(targets, ", ")
+
+	// check and resolve aliases
+	for _, alias := range aliasParser.FindAllString(targets, -1) {
+		if mac, found := aliasMap.Find(alias); found {
+			mac = NormalizeMac(mac)
+			hw, err := net.ParseMAC(mac)
+			if err != nil {
+				return nil, nil, fmt.Errorf("Error while parsing MAC '%s': %s", mac, err)
+			}
+
+			macs = append(macs, hw)
+			targets = strings.Replace(targets, alias, "", -1)
+		} else {
+			return nil, nil, fmt.Errorf("Could not resolve alias %s", alias)
+		}
+	}
+	targets = strings.Trim(targets, ", ")
+
+	// parse what's left
+	if targets != "" {
+		list, err := iprange.ParseList(targets)
+		if err != nil {
+			return nil, nil, fmt.Errorf("Error while parsing address list '%s': %s.", targets, err)
+		}
+
+		ips = list.Expand()
+	}
+
+	return
+}
+
 func buildEndpointFromInterface(iface net.Interface) (*Endpoint, error) {
 	addrs, err := iface.Addrs()
 	if err != nil {
@@ -57,7 +133,7 @@ func buildEndpointFromInterface(iface net.Interface) (*Endpoint, error) {
 	for _, a := range addrs {
 		address := a.String()
 		if IPv4Validator.MatchString(address) {
-			if strings.IndexRune(address, '/') == -1 {
+			if !strings.ContainsRune(address, '/') {
 				// plain ip
 				e.SetIP(address)
 			} else {
@@ -125,7 +201,7 @@ func FindInterface(name string) (*Endpoint, error) {
 
 		for _, address := range addrs {
 			ip := address.String()
-			if strings.Contains(ip, "127.0.0.1") == false && IPv4Validator.MatchString(ip) {
+			if !strings.Contains(ip, "127.0.0.1") && IPv4Validator.MatchString(ip) {
 				return buildEndpointFromInterface(iface)
 			}
 		}

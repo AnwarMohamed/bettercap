@@ -11,24 +11,20 @@ import (
 	"github.com/bettercap/bettercap/session"
 )
 
-var sess *session.Session
-var err error
-
-// Some modules are enabled by default in order
-// to make the interactive session useful.
-var autoEnableList = []string{
-	"events.stream",
-	"net.recon",
-}
-
 func main() {
-	if sess, err = session.New(); err != nil {
+	sess, err := session.New()
+	if err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+	defer sess.Close()
 
-	if core.NoColors == true {
-		fmt.Printf("\n\nWARNING: This terminal does not support colors, view will be very limited.\n\n")
+	if !core.HasColors {
+		if *sess.Options.NoColors {
+			fmt.Printf("\n\nWARNING: Terminal colors have been disabled, view will be very limited.\n\n")
+		} else {
+			fmt.Printf("\n\nWARNING: This terminal does not support colors, view will be very limited.\n\n")
+		}
 	}
 
 	appName := fmt.Sprintf("%s v%s", core.Name, core.Version)
@@ -37,6 +33,7 @@ func main() {
 
 	sess.Register(modules.NewEventsStream(sess))
 	sess.Register(modules.NewTicker(sess))
+	sess.Register(modules.NewUpdateModule(sess))
 	sess.Register(modules.NewMacChanger(sess))
 	sess.Register(modules.NewProber(sess))
 	sess.Register(modules.NewDiscovery(sess))
@@ -44,42 +41,45 @@ func main() {
 	sess.Register(modules.NewDHCP6Spoofer(sess))
 	sess.Register(modules.NewDNSSpoofer(sess))
 	sess.Register(modules.NewSniffer(sess))
-	sess.Register(modules.NewHttpServer(sess))
+	sess.Register(modules.NewPacketProxy(sess))
+	sess.Register(modules.NewTcpProxy(sess))
 	sess.Register(modules.NewHttpProxy(sess))
 	sess.Register(modules.NewHttpsProxy(sess))
-	sess.Register(modules.NewTcpProxy(sess))
+	sess.Register(modules.NewHttpServer(sess))
 	sess.Register(modules.NewRestAPI(sess))
 	sess.Register(modules.NewWOL(sess))
-	sess.Register(modules.NewWiFiRecon(sess))
+	sess.Register(modules.NewWiFiModule(sess))
 	sess.Register(modules.NewBLERecon(sess))
 	sess.Register(modules.NewSynScanner(sess))
+	sess.Register(modules.NewGPS(sess))
+	sess.Register(modules.NewMySQLServer(sess))
 
 	if err = sess.Start(); err != nil {
 		log.Fatal("%s", err)
 	}
 
-	for _, modName := range autoEnableList {
-		if err = sess.Run(modName + " on"); err != nil {
-			log.Fatal("Error while starting module %s: %", modName, err)
-		}
-	}
-
-	/*
-	 * Commands sent with -eval are used to set specific
-	 * caplet parameters (i.e. arp.spoof.targets) via command
-	 * line, therefore they need to be executed first otherwise
-	 * modules might already be started.
-	 */
+	// Commands sent with -eval are used to set specific
+	// caplet parameters (i.e. arp.spoof.targets) via command
+	// line, therefore they need to be executed first otherwise
+	// modules might already be started.
 	for _, cmd := range session.ParseCommands(*sess.Options.Commands) {
 		if err = sess.Run(cmd); err != nil {
 			log.Error("Error while running '%s': %s", core.Bold(cmd), core.Red(err.Error()))
 		}
 	}
 
+	// Some modules are enabled by default in order
+	// to make the interactive session useful.
+	for _, modName := range core.CommaSplit(*sess.Options.AutoStart) {
+		if err = sess.Run(modName + " on"); err != nil {
+			log.Fatal("Error while starting module %s: %s", modName, err)
+		}
+	}
+
 	// Then run the caplet if specified.
 	if *sess.Options.Caplet != "" {
 		if err = sess.RunCaplet(*sess.Options.Caplet); err != nil {
-			log.Error("Error while runnig caplet %s: %s", core.Bold(*sess.Options.Caplet), core.Red(err.Error()))
+			log.Error("Error while running caplet %s: %s", core.Bold(*sess.Options.Caplet), core.Red(err.Error()))
 		}
 	}
 
@@ -99,9 +99,4 @@ func main() {
 			}
 		}
 	}
-
-	sess.Close()
-
-	// Windows requires this otherwise the app never exits ...
-	os.Exit(0)
 }

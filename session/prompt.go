@@ -15,23 +15,6 @@ const (
 	DefaultPrompt  = "{by}{fw}{cidr} {fb}> {env.iface.ipv4} {reset} {bold}» {reset}"
 )
 
-var PromptEffects = map[string]string{
-	"{bold}":  core.BOLD,
-	"{dim}":   core.DIM,
-	"{r}":     core.RED,
-	"{g}":     core.GREEN,
-	"{b}":     core.BLUE,
-	"{y}":     core.YELLOW,
-	"{fb}":    core.FG_BLACK,
-	"{fw}":    core.FG_WHITE,
-	"{bdg}":   core.BG_DGRAY,
-	"{br}":    core.BG_RED,
-	"{bg}":    core.BG_GREEN,
-	"{by}":    core.BG_YELLOW,
-	"{blb}":   core.BG_LBLUE, // Ziggy this is for you <3
-	"{reset}": core.RESET,
-}
-
 var PromptCallbacks = map[string]func(s *Session) string{
 	"{cidr}": func(s *Session) string {
 		return s.Interface.CIDR()
@@ -56,7 +39,7 @@ var PromptCallbacks = map[string]func(s *Session) string{
 	},
 }
 
-var envRe = regexp.MustCompile("{env\\.([^}]+)}")
+var envRe = regexp.MustCompile(`{env\.([^}]+)}`)
 
 type Prompt struct {
 }
@@ -67,11 +50,30 @@ func NewPrompt() Prompt {
 
 func (p Prompt) Render(s *Session) string {
 	found, prompt := s.Env.Get(PromptVariable)
-	if found == false {
+	if !found {
 		prompt = DefaultPrompt
 	}
 
-	for tok, effect := range PromptEffects {
+	// these are here because if colors are disabled,
+	// we need the updated core.* variables
+	var effects = map[string]string{
+		"{bold}":  core.BOLD,
+		"{dim}":   core.DIM,
+		"{r}":     core.RED,
+		"{g}":     core.GREEN,
+		"{b}":     core.BLUE,
+		"{y}":     core.YELLOW,
+		"{fb}":    core.FG_BLACK,
+		"{fw}":    core.FG_WHITE,
+		"{bdg}":   core.BG_DGRAY,
+		"{br}":    core.BG_RED,
+		"{bg}":    core.BG_GREEN,
+		"{by}":    core.BG_YELLOW,
+		"{blb}":   core.BG_LBLUE, // Ziggy this is for you <3
+		"{reset}": core.RESET,
+	}
+
+	for tok, effect := range effects {
 		prompt = strings.Replace(prompt, tok, effect, -1)
 	}
 
@@ -87,7 +89,7 @@ func (p Prompt) Render(s *Session) string {
 	}
 
 	// make sure an user error does not screw all terminal
-	if strings.HasPrefix(prompt, core.RESET) == false {
+	if !strings.HasPrefix(prompt, core.RESET) {
 		prompt += core.RESET
 	}
 

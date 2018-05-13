@@ -2,158 +2,83 @@ package packets
 
 import (
 	"bytes"
-	"encoding/binary"
-	"fmt"
 	"net"
+
+	"github.com/bettercap/bettercap/network"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 )
 
-type Dot11CipherType uint8
-
-const (
-	Dot11CipherWep    Dot11CipherType = 1
-	Dot11CipherTkip   Dot11CipherType = 2
-	Dot11CipherWrap   Dot11CipherType = 3
-	Dot11CipherCcmp   Dot11CipherType = 4
-	Dot11CipherWep104 Dot11CipherType = 5
+var (
+	openFlags = 1057
+	wpaFlags  = 1041
+	//1-54 Mbit
+	supportedRates = []byte{0x82, 0x84, 0x8b, 0x96, 0x24, 0x30, 0x48, 0x6c, 0x03, 0x01}
+	wpaRSN         = []byte{
+		0x01, 0x00, // RSN Version 1
+		0x00, 0x0f, 0xac, 0x02, // Group Cipher Suite : 00-0f-ac TKIP
+		0x02, 0x00, // 2 Pairwise Cipher Suites (next two lines)
+		0x00, 0x0f, 0xac, 0x04, // AES Cipher / CCMP
+		0x00, 0x0f, 0xac, 0x02, // TKIP Cipher
+		0x01, 0x00, // 1 Authentication Key Management Suite (line below)
+		0x00, 0x0f, 0xac, 0x02, // Pre-Shared Key
+		0x00, 0x00,
+	}
+	wpaSignatureBytes = []byte{0, 0x50, 0xf2, 1}
 )
 
-func (a Dot11CipherType) String() string {
-	switch a {
-	case Dot11CipherWep:
-		return "WEP"
-	case Dot11CipherTkip:
-		return "TKIP"
-	case Dot11CipherWrap:
-		return "WRAP"
-	case Dot11CipherCcmp:
-		return "CCMP"
-	case Dot11CipherWep104:
-		return "WEP104"
-	default:
-		return "UNK"
+type Dot11ApConfig struct {
+	SSID       string
+	BSSID      net.HardwareAddr
+	Channel    int
+	Encryption bool
+}
+
+func Dot11Info(id layers.Dot11InformationElementID, info []byte) *layers.Dot11InformationElement {
+	return &layers.Dot11InformationElement{
+		ID:     id,
+		Length: uint8(len(info) & 0xff),
+		Info:   info,
 	}
 }
 
-type Dot11AuthType uint8
-
-const (
-	Dot11AuthMgt Dot11AuthType = 1
-	Dot11AuthPsk Dot11AuthType = 2
-)
-
-func (a Dot11AuthType) String() string {
-	switch a {
-	case Dot11AuthMgt:
-		return "MGT"
-	case Dot11AuthPsk:
-		return "PSK"
-	default:
-		return "UNK"
-	}
-}
-
-type CipherSuite struct {
-	OUI  []byte // 3 bytes
-	Type Dot11CipherType
-}
-
-type AuthSuite struct {
-	OUI  []byte // 3 bytes
-	Type Dot11AuthType
-}
-
-type CipherSuiteSelector struct {
-	Count  uint16
-	Suites []CipherSuite
-}
-type AuthSuiteSelector struct {
-	Count  uint16
-	Suites []AuthSuite
-}
-
-type VendorInfo struct {
-	WPAVersion uint16
-	Multicast  CipherSuite
-	Unicast    CipherSuiteSelector
-	AuthKey    AuthSuiteSelector
-}
-
-type RSNInfo struct {
-	Version  uint16
-	Group    CipherSuite
-	Pairwise CipherSuiteSelector
-	AuthKey  AuthSuiteSelector
-}
-
-func Dot11InformationElementVendorInfoDecode(vendorInfo []byte) (VendorInfo, error) {
-	var v VendorInfo
-	var i uint16
-	if len(vendorInfo) < 15 {
-		return v, fmt.Errorf("VendorInfo packet length %v too short, %v required", len(vendorInfo), 15)
+func NewDot11Beacon(conf Dot11ApConfig, seq uint16) (error, []byte) {
+	flags := openFlags
+	if conf.Encryption {
+		flags = wpaFlags
 	}
 
-	v.WPAVersion = binary.LittleEndian.Uint16(vendorInfo[0:2])
-	v.Multicast.OUI = vendorInfo[2:5]
-	v.Multicast.Type = Dot11CipherType(vendorInfo[5])
-
-	v.Unicast.Count = binary.LittleEndian.Uint16(vendorInfo[6:8])
-
-	p := 8
-	for i = 0; i < v.Unicast.Count && p < len(vendorInfo); i++ {
-		var suite CipherSuite
-		suite.OUI = vendorInfo[p : p+3]
-		suite.Type = Dot11CipherType(vendorInfo[p+3])
-		v.Unicast.Suites = append(v.Unicast.Suites, suite)
-		p = p + 4
+	stack := []gopacket.SerializableLayer{
+		&layers.RadioTap{
+			DBMAntennaSignal: int8(-10),
+			ChannelFrequency: layers.RadioTapChannelFrequency(network.Dot11Chan2Freq(conf.Channel)),
+		},
+		&layers.Dot11{
+			Address1:       network.BroadcastHw,
+			Address2:       conf.BSSID,
+			Address3:       conf.BSSID,
+			Type:           layers.Dot11TypeMgmtBeacon,
+			SequenceNumber: seq,
+		},
+		&layers.Dot11MgmtBeacon{
+			Flags:    uint16(flags),
+			Interval: 100,
+		},
+		Dot11Info(layers.Dot11InformationElementIDSSID, []byte(conf.SSID)),
+		Dot11Info(layers.Dot11InformationElementIDRates, supportedRates),
+		Dot11Info(layers.Dot11InformationElementIDDSSet, []byte{byte(conf.Channel & 0xff)}),
 	}
 
-	v.AuthKey.Count = binary.LittleEndian.Uint16(vendorInfo[p : p+2])
-	p = p + 2
-	for i = 0; i < v.AuthKey.Count && p < len(vendorInfo); i++ {
-		var suite AuthSuite
-		suite.OUI = vendorInfo[p : p+3]
-		suite.Type = Dot11AuthType(vendorInfo[p+3])
-		v.AuthKey.Suites = append(v.AuthKey.Suites, suite)
-		p = p + 4
+	if conf.Encryption {
+		stack = append(stack, &layers.Dot11InformationElement{
+			ID:     layers.Dot11InformationElementIDRSNInfo,
+			Length: uint8(len(wpaRSN) & 0xff),
+			Info:   wpaRSN,
+		})
 	}
 
-	return v, nil
-}
-
-func Dot11InformationElementRSNInfoDecode(info []byte) (RSNInfo, error) {
-	var rsn RSNInfo
-	if len(info) < 20 {
-		return rsn, fmt.Errorf("RSNInfo packet length %v too short, %v required", len(info), 20)
-	}
-
-	rsn.Version = binary.LittleEndian.Uint16(info[0:2])
-	rsn.Group.OUI = info[2:5]
-	rsn.Group.Type = Dot11CipherType(info[5])
-	rsn.Pairwise.Count = binary.LittleEndian.Uint16(info[6:8])
-
-	p := 8
-	for i := uint16(0); i < rsn.Pairwise.Count && p < len(info); i++ {
-		var suite CipherSuite
-		suite.OUI = info[p : p+3]
-		suite.Type = Dot11CipherType(info[p+3])
-		rsn.Pairwise.Suites = append(rsn.Pairwise.Suites, suite)
-		p = p + 4
-	}
-
-	rsn.AuthKey.Count = binary.LittleEndian.Uint16(info[p : p+2])
-	p = p + 2
-	for i := uint16(0); i < rsn.AuthKey.Count && p < len(info); i++ {
-		var suite AuthSuite
-		suite.OUI = info[p : p+3]
-		suite.Type = Dot11AuthType(info[p+3])
-		rsn.AuthKey.Suites = append(rsn.AuthKey.Suites, suite)
-		p = p + 4
-	}
-
-	return rsn, nil
+	return Serialize(stack...)
 }
 
 func NewDot11Deauth(a1 net.HardwareAddr, a2 net.HardwareAddr, a3 net.HardwareAddr, seq uint16) (error, []byte) {
@@ -182,7 +107,7 @@ func Dot11Parse(packet gopacket.Packet) (ok bool, radiotap *layers.RadioTap, dot
 		return
 	}
 	radiotap, ok = radiotapLayer.(*layers.RadioTap)
-	if ok == false || radiotap == nil {
+	if !ok || radiotap == nil {
 		return
 	}
 
@@ -200,7 +125,7 @@ func Dot11ParseIDSSID(packet gopacket.Packet) (bool, string) {
 	for _, layer := range packet.Layers() {
 		if layer.LayerType() == layers.LayerTypeDot11InformationElement {
 			dot11info, ok := layer.(*layers.Dot11InformationElement)
-			if ok == true && dot11info.ID == layers.Dot11InformationElementIDSSID {
+			if ok && dot11info.ID == layers.Dot11InformationElementIDSSID {
 				if len(dot11info.Info) == 0 {
 					return true, "<hidden>"
 				}
@@ -227,7 +152,7 @@ func Dot11ParseEncryption(packet gopacket.Packet, dot11 *layers.Dot11) (bool, st
 	for _, layer := range packet.Layers() {
 		if layer.LayerType() == layers.LayerTypeDot11InformationElement {
 			info, ok := layer.(*layers.Dot11InformationElement)
-			if ok == true {
+			if ok {
 				found = true
 				if info.ID == layers.Dot11InformationElementIDRSNInfo {
 					enc = "WPA2"
@@ -240,7 +165,7 @@ func Dot11ParseEncryption(packet gopacket.Packet, dot11 *layers.Dot11) (bool, st
 							auth = rsn.AuthKey.Suites[i].Type.String()
 						}
 					}
-				} else if enc == "" && info.ID == layers.Dot11InformationElementIDVendor && info.Length >= 8 && bytes.Compare(info.OUI, []byte{0, 0x50, 0xf2, 1}) == 0 && bytes.HasPrefix(info.Info, []byte{1, 0}) {
+				} else if enc == "" && info.ID == layers.Dot11InformationElementIDVendor && info.Length >= 8 && bytes.Equal(info.OUI, wpaSignatureBytes) && bytes.HasPrefix(info.Info, []byte{1, 0}) {
 					enc = "WPA"
 					vendor, err := Dot11InformationElementVendorInfoDecode(info.Info)
 					if err == nil {
@@ -270,5 +195,22 @@ func Dot11IsDataFor(dot11 *layers.Dot11, station net.HardwareAddr) bool {
 		return false
 	}
 	// packet going to this specific BSSID?
-	return bytes.Compare(dot11.Address1, station) == 0
+	return bytes.Equal(dot11.Address1, station)
+}
+
+func Dot11ParseDSSet(packet gopacket.Packet) (bool, int) {
+	channel := 0
+	found := false
+	for _, layer := range packet.Layers() {
+		info, ok := layer.(*layers.Dot11InformationElement)
+		if ok {
+			if info.ID == layers.Dot11InformationElementIDDSSet {
+				channel, _ = Dot11InformationElementIDDSSetDecode(info.Info)
+				found = true
+				break
+			}
+		}
+	}
+
+	return found, channel
 }

@@ -42,6 +42,7 @@ type HTTPProxy struct {
 
 	isTLS       bool
 	isRunning   bool
+	stripper    *SSLStripper
 	sniListener net.Listener
 	sess        *session.Session
 }
@@ -56,16 +57,20 @@ func stripPort(s string) string {
 
 func NewHTTPProxy(s *session.Session) *HTTPProxy {
 	p := &HTTPProxy{
-		Name:   "http.proxy",
-		Proxy:  goproxy.NewProxyHttpServer(),
-		sess:   s,
-		isTLS:  false,
-		Server: nil,
+		Name:     "http.proxy",
+		Proxy:    goproxy.NewProxyHttpServer(),
+		sess:     s,
+		stripper: NewSSLStripper(s, false),
+		isTLS:    false,
+		Server:   nil,
 	}
 
+	p.Proxy.Verbose = false
+	p.Proxy.Logger.SetOutput(ioutil.Discard)
+
 	p.Proxy.NonproxyHandler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if p.doProxy(req) == true {
-			if p.isTLS == false {
+		if p.doProxy(req) {
+			if !p.isTLS {
 				req.URL.Scheme = "http"
 			}
 			req.URL.Host = req.Host
@@ -74,50 +79,10 @@ func NewHTTPProxy(s *session.Session) *HTTPProxy {
 	})
 
 	p.Proxy.OnRequest().HandleConnect(goproxy.AlwaysMitm)
-	p.Proxy.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-		log.Debug("(%s) < %s %s %s%s", core.Green(p.Name), req.RemoteAddr, req.Method, req.Host, req.URL.Path)
-		if p.Script != nil {
-			jsres := p.Script.OnRequest(req)
-			if jsres != nil {
-				p.logAction(req, jsres)
-				return req, jsres.ToResponse(req)
-			}
-		}
-		return req, nil
-	})
-
-	p.Proxy.OnResponse().DoFunc(func(res *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
-		if res != nil {
-			req := res.Request
-			log.Debug("(%s) > %s %s %s%s", core.Green(p.Name), req.RemoteAddr, req.Method, req.Host, req.URL.Path)
-			if p.Script != nil {
-				jsres := p.Script.OnResponse(res)
-				if jsres != nil {
-					p.logAction(res.Request, jsres)
-					return jsres.ToResponse(res.Request)
-				}
-			}
-		}
-		return res
-	})
+	p.Proxy.OnRequest().DoFunc(p.onRequestFilter)
+	p.Proxy.OnResponse().DoFunc(p.onResponseFilter)
 
 	return p
-}
-
-func (p *HTTPProxy) logAction(req *http.Request, jsres *JSResponse) {
-	p.sess.Events.Add(p.Name+".spoofed-response", struct {
-		To     string
-		Method string
-		Host   string
-		Path   string
-		Size   int
-	}{
-		strings.Split(req.RemoteAddr, ":")[0],
-		req.Method,
-		req.Host,
-		req.URL.Path,
-		len(jsres.Body),
-	})
 }
 
 func (p *HTTPProxy) doProxy(req *http.Request) bool {
@@ -141,9 +106,10 @@ func (p *HTTPProxy) doProxy(req *http.Request) bool {
 	return true
 }
 
-func (p *HTTPProxy) Configure(address string, proxyPort int, httpPort int, scriptPath string) error {
+func (p *HTTPProxy) Configure(address string, proxyPort int, httpPort int, scriptPath string, stripSSL bool) error {
 	var err error
 
+	p.stripper.Enable(stripSSL)
 	p.Address = address
 
 	if scriptPath != "" {
@@ -161,7 +127,7 @@ func (p *HTTPProxy) Configure(address string, proxyPort int, httpPort int, scrip
 		WriteTimeout: httpWriteTimeout,
 	}
 
-	if p.sess.Firewall.IsForwardingEnabled() == false {
+	if !p.sess.Firewall.IsForwardingEnabled() {
 		log.Info("Enabling forwarding.")
 		p.sess.Firewall.EnableForwarding(true)
 	}
@@ -177,6 +143,13 @@ func (p *HTTPProxy) Configure(address string, proxyPort int, httpPort int, scrip
 	}
 
 	log.Debug("Applied redirection %s", p.Redirection.String())
+
+	p.sess.UnkCmdCallback = func(cmd string) bool {
+		if p.Script != nil {
+			return p.Script.OnCommand(cmd)
+		}
+		return false
+	}
 
 	return nil
 }
@@ -195,7 +168,7 @@ func TLSConfigFromCA(ca *tls.Certificate) func(host string, ctx *goproxy.ProxyCt
 
 		cert := getCachedCert(hostname, port)
 		if cert == nil {
-			log.Info("Creating spoofed certificate for %s:%d", core.Yellow(hostname), port)
+			log.Debug("Creating spoofed certificate for %s:%d", core.Yellow(hostname), port)
 			cert, err = btls.SignCertificateForHost(ca, hostname, port)
 			if err != nil {
 				log.Warning("Cannot sign host certificate with provided CA: %s", err)
@@ -214,9 +187,8 @@ func TLSConfigFromCA(ca *tls.Certificate) func(host string, ctx *goproxy.ProxyCt
 	}
 }
 
-func (p *HTTPProxy) ConfigureTLS(address string, proxyPort int, httpPort int, scriptPath string, certFile string, keyFile string) error {
-	err := p.Configure(address, proxyPort, httpPort, scriptPath)
-	if err != nil {
+func (p *HTTPProxy) ConfigureTLS(address string, proxyPort int, httpPort int, scriptPath string, certFile string, keyFile string, stripSSL bool) (err error) {
+	if p.Configure(address, proxyPort, httpPort, scriptPath, stripSSL); err != nil {
 		return err
 	}
 
@@ -227,7 +199,6 @@ func (p *HTTPProxy) ConfigureTLS(address string, proxyPort int, httpPort int, sc
 
 	rawCert, _ := ioutil.ReadFile(p.CertFile)
 	rawKey, _ := ioutil.ReadFile(p.KeyFile)
-
 	ourCa, err := tls.X509KeyPair(rawCert, rawKey)
 	if err != nil {
 		return err
@@ -331,7 +302,14 @@ func (p *HTTPProxy) Start() {
 	go func() {
 		var err error
 
-		if p.isTLS == true {
+		strip := core.Yellow("enabled")
+		if !p.stripper.Enabled() {
+			strip = core.Dim("disabled")
+		}
+
+		log.Info("%s started on %s (sslstrip %s)", core.Green(p.Name), p.Server.Addr, strip)
+
+		if p.isTLS {
 			err = p.httpsWorker()
 		} else {
 			err = p.httpWorker()
@@ -352,7 +330,9 @@ func (p *HTTPProxy) Stop() error {
 		p.Redirection = nil
 	}
 
-	if p.isTLS == true {
+	p.sess.UnkCmdCallback = nil
+
+	if p.isTLS {
 		p.isRunning = false
 		p.sniListener.Close()
 		return nil

@@ -35,13 +35,8 @@ func NewBLE(newcb BLEDevNewCallback, lostcb BLEDevLostCallback) *BLE {
 
 func (b *BLE) MarshalJSON() ([]byte, error) {
 	doc := bleJSON{
-		Devices: make([]*BLEDevice, 0),
+		Devices: b.Devices(),
 	}
-
-	for _, dev := range b.Devices() {
-		doc.Devices = append(doc.Devices, dev)
-	}
-
 	return json.Marshal(doc)
 }
 
@@ -58,7 +53,7 @@ func (b *BLE) AddIfNew(id string, p gatt.Peripheral, a *gatt.Advertisement, rssi
 	defer b.Unlock()
 
 	id = NormalizeMac(id)
-	if dev, found := b.devices[id]; found == true {
+	if dev, found := b.devices[id]; found {
 		dev.LastSeen = time.Now()
 		dev.RSSI = rssi
 		dev.Advertisement = a
@@ -80,7 +75,7 @@ func (b *BLE) Remove(id string) {
 	defer b.Unlock()
 
 	id = NormalizeMac(id)
-	if dev, found := b.devices[id]; found == true {
+	if dev, found := b.devices[id]; found {
 		delete(b.devices, id)
 		if b.lostCb != nil {
 			b.lostCb(dev)

@@ -5,6 +5,15 @@ import (
 	"os"
 )
 
+const (
+	DEBUG = iota
+	INFO
+	IMPORTANT
+	WARNING
+	ERROR
+	FATAL
+)
+
 // https://misc.flogisoft.com/bash/tip_colors_and_formatting
 var (
 	BOLD = "\033[1m"
@@ -26,14 +35,35 @@ var (
 
 	RESET = "\033[0m"
 
-	NoColors = false
+	LogLabels = map[int]string{
+		DEBUG:     "dbg",
+		INFO:      "inf",
+		IMPORTANT: "imp",
+		WARNING:   "war",
+		ERROR:     "err",
+		FATAL:     "!!!",
+	}
+
+	LogColors = map[int]string{
+		DEBUG:     DIM + FG_BLACK + BG_DGRAY,
+		INFO:      FG_WHITE + BG_GREEN,
+		IMPORTANT: FG_WHITE + BG_LBLUE,
+		WARNING:   FG_WHITE + BG_YELLOW,
+		ERROR:     FG_WHITE + BG_RED,
+		FATAL:     FG_WHITE + BG_RED + BOLD,
+	}
+
+	HasColors = true
 )
 
-func init() {
-	NoColors = os.Getenv("TERM") == "dumb" ||
+func isDumbTerminal() bool {
+	return os.Getenv("TERM") == "dumb" ||
 		os.Getenv("TERM") == "" ||
 		(!isatty.IsTerminal(os.Stdout.Fd()) && !isatty.IsCygwinTerminal(os.Stdout.Fd()))
-	if NoColors {
+}
+
+func InitSwag(disableColors bool) {
+	if disableColors || isDumbTerminal() {
 		BOLD = ""
 		DIM = ""
 		RED = ""
@@ -48,36 +78,19 @@ func init() {
 		BG_YELLOW = ""
 		BG_LBLUE = ""
 		RESET = ""
+
+		LogColors = map[int]string{
+			DEBUG:     "",
+			INFO:      "",
+			IMPORTANT: "",
+			WARNING:   "",
+			ERROR:     "",
+			FATAL:     "",
+		}
+
+		HasColors = false
 	}
 }
-
-const (
-	DEBUG = iota
-	INFO
-	IMPORTANT
-	WARNING
-	ERROR
-	FATAL
-)
-
-var (
-	LogLabels = map[int]string{
-		DEBUG:     "dbg",
-		INFO:      "inf",
-		IMPORTANT: "imp",
-		WARNING:   "war",
-		ERROR:     "err",
-		FATAL:     "!!!",
-	}
-	LogColors = map[int]string{
-		DEBUG:     DIM + FG_BLACK + BG_DGRAY,
-		INFO:      FG_WHITE + BG_GREEN,
-		IMPORTANT: FG_WHITE + BG_LBLUE,
-		WARNING:   FG_WHITE + BG_YELLOW,
-		ERROR:     FG_WHITE + BG_RED,
-		FATAL:     FG_WHITE + BG_RED + BOLD,
-	}
-)
 
 // W for Wrap
 func W(e, s string) string {

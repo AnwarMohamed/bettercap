@@ -23,7 +23,7 @@ func Make(iface *network.Endpoint) FirewallManager {
 	firewall := &LinuxFirewall{
 		iface:        iface,
 		forwarding:   false,
-		redirections: make(map[string]*Redirection, 0),
+		redirections: make(map[string]*Redirection),
 	}
 
 	firewall.forwarding = firewall.IsForwardingEnabled()
@@ -45,11 +45,8 @@ func (f LinuxFirewall) enableFeature(filename string, enable bool) error {
 	}
 	defer fd.Close()
 
-	if _, err = fd.WriteString(value); err != nil {
-		return err
-	}
-
-	return nil
+	_, err = fd.WriteString(value)
+	return err
 }
 
 func (f LinuxFirewall) IsForwardingEnabled() bool {
@@ -65,14 +62,45 @@ func (f LinuxFirewall) EnableForwarding(enabled bool) error {
 	return f.enableFeature(IPV4ForwardingFile, enabled)
 }
 
-func (f *LinuxFirewall) EnableRedirection(r *Redirection, enabled bool) error {
-	var opts []string
+func (f *LinuxFirewall) getCommandLine(r *Redirection, enabled bool) (cmdLine []string) {
+	action := "-A"
+	if !enabled {
+		action = "-D"
+	}
 
+	if r.SrcAddress == "" {
+		cmdLine = []string{
+			"-t", "nat",
+			action, "PREROUTING",
+			"-i", r.Interface,
+			"-p", r.Protocol,
+			"--dport", fmt.Sprintf("%d", r.SrcPort),
+			"-j", "DNAT",
+			"--to", fmt.Sprintf("%s:%d", r.DstAddress, r.DstPort),
+		}
+	} else {
+		cmdLine = []string{
+			"-t", "nat",
+			action, "PREROUTING",
+			"-i", r.Interface,
+			"-p", r.Protocol,
+			"-d", r.SrcAddress,
+			"--dport", fmt.Sprintf("%d", r.SrcPort),
+			"-j", "DNAT",
+			"--to", fmt.Sprintf("%s:%d", r.DstAddress, r.DstPort),
+		}
+	}
+
+	return
+}
+
+func (f *LinuxFirewall) EnableRedirection(r *Redirection, enabled bool) error {
+	cmdLine := f.getCommandLine(r, enabled)
 	rkey := r.String()
 	_, found := f.redirections[rkey]
 
-	if enabled == true {
-		if found == true {
+	if enabled {
+		if found {
 			return fmt.Errorf("Redirection '%s' already enabled.", rkey)
 		}
 
@@ -81,63 +109,17 @@ func (f *LinuxFirewall) EnableRedirection(r *Redirection, enabled bool) error {
 		// accept all
 		if _, err := core.Exec("iptables", []string{"-P", "FORWARD", "ACCEPT"}); err != nil {
 			return err
-		}
-
-		if r.SrcAddress == "" {
-			opts = []string{
-				"-t", "nat",
-				"-A", "PREROUTING",
-				"-i", r.Interface,
-				"-p", r.Protocol,
-				"--dport", fmt.Sprintf("%d", r.SrcPort),
-				"-j", "DNAT",
-				"--to", fmt.Sprintf("%s:%d", r.DstAddress, r.DstPort),
-			}
-		} else {
-			opts = []string{
-				"-t", "nat",
-				"-A", "PREROUTING",
-				"-i", r.Interface,
-				"-p", r.Protocol,
-				"-d", r.SrcAddress,
-				"--dport", fmt.Sprintf("%d", r.SrcPort),
-				"-j", "DNAT",
-				"--to", fmt.Sprintf("%s:%d", r.DstAddress, r.DstPort),
-			}
-		}
-		if _, err := core.Exec("iptables", opts); err != nil {
+		} else if _, err := core.Exec("iptables", cmdLine); err != nil {
 			return err
 		}
 	} else {
-		if found == false {
+		if !found {
 			return nil
 		}
 
 		delete(f.redirections, r.String())
 
-		if r.SrcAddress == "" {
-			opts = []string{
-				"-t", "nat",
-				"-D", "PREROUTING",
-				"-i", r.Interface,
-				"-p", r.Protocol,
-				"--dport", fmt.Sprintf("%d", r.SrcPort),
-				"-j", "DNAT",
-				"--to", fmt.Sprintf("%s:%d", r.DstAddress, r.DstPort),
-			}
-		} else {
-			opts = []string{
-				"-t", "nat",
-				"-D", "PREROUTING",
-				"-i", r.Interface,
-				"-p", r.Protocol,
-				"-d", r.SrcAddress,
-				"--dport", fmt.Sprintf("%d", r.SrcPort),
-				"-j", "DNAT",
-				"--to", fmt.Sprintf("%s:%d", r.DstAddress, r.DstPort),
-			}
-		}
-		if _, err := core.Exec("iptables", opts); err != nil {
+		if _, err := core.Exec("iptables", cmdLine); err != nil {
 			return err
 		}
 	}

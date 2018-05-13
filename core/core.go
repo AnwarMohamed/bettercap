@@ -30,7 +30,7 @@ func UniqueInts(a []int, sorted bool) []int {
 		tmp[n] = true
 	}
 
-	for n, _ := range tmp {
+	for n := range tmp {
 		uniq = append(uniq, n)
 	}
 
@@ -41,7 +41,23 @@ func UniqueInts(a []int, sorted bool) []int {
 	return uniq
 }
 
-func Exec(executable string, args []string) (string, error) {
+func SepSplit(sv string, sep string) []string {
+	filtered := make([]string, 0)
+	for _, part := range strings.Split(sv, sep) {
+		part = Trim(part)
+		if part != "" {
+			filtered = append(filtered, part)
+		}
+	}
+	return filtered
+
+}
+
+func CommaSplit(csv string) []string {
+	return SepSplit(csv, ",")
+}
+
+func ExecSilent(executable string, args []string) (string, error) {
 	path, err := exec.LookPath(executable)
 	if err != nil {
 		return "", err
@@ -49,11 +65,18 @@ func Exec(executable string, args []string) (string, error) {
 
 	raw, err := exec.Command(path, args...).CombinedOutput()
 	if err != nil {
-		fmt.Printf("ERROR: path=%s args=%s err=%s out='%s'\n", path, args, err, raw)
 		return "", err
 	} else {
 		return Trim(string(raw)), nil
 	}
+}
+
+func Exec(executable string, args []string) (string, error) {
+	out, err := ExecSilent(executable, args)
+	if err != nil {
+		fmt.Printf("ERROR for '%s %s': %s\n", executable, args, err)
+	}
+	return out, err
 }
 
 func Exists(path string) bool {
@@ -70,9 +93,10 @@ func ExpandPath(path string) (string, error) {
 			usr, err := user.Current()
 			if err != nil {
 				return "", err
+			} else {
+				// Replace only the first occurrence of ~
+				path = strings.Replace(path, "~", usr.HomeDir, 1)
 			}
-			// Replace only the first occurrence of ~
-			path = strings.Replace(path, "~", usr.HomeDir, 1)
 		}
 		return filepath.Abs(path)
 	}

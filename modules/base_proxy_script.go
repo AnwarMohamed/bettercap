@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"encoding/base64"
 	"io/ioutil"
 	"sync"
 
@@ -48,13 +49,13 @@ func LoadProxyScriptSource(path, source string, sess *session.Session) (err erro
 	// define session pointer
 	err = s.VM.Set("env", sess.Env.Data)
 	if err != nil {
-		log.Error("Error while defining environment: %s", err)
+		log.Error( "Error while defining environment: %s", "\nTraceback:\n  " + err.(*otto.Error).String() )
 		return
 	}
 
 	err = s.defineBuiltins()
 	if err != nil {
-		log.Error("Error while defining builtin functions: %s", err)
+		log.Error( "Error while defining builtin functions: %s", "\nTraceback:\n  " + err.(*otto.Error).String() )
 		return
 	}
 
@@ -62,7 +63,7 @@ func LoadProxyScriptSource(path, source string, sess *session.Session) (err erro
 	if s.hasCallback("onLoad") {
 		_, err = s.VM.Run("onLoad()")
 		if err != nil {
-			log.Error("Error while executing onLoad callback: %s", err)
+			log.Error( "Error while executing onLoad callback: %s", "\nTraceback:\n  " + err.(*otto.Error).String() )
 			return
 		}
 	}
@@ -101,12 +102,93 @@ func (s *ProxyScript) defineBuiltins() error {
 		return v
 	})
 
+	s.VM.Set("writeFile", func(call otto.FunctionCall) otto.Value {
+		argv := call.ArgumentList
+		argc := len(argv)
+		if argc != 2 {
+			return errOtto("writeFile: expected 2 arguments, %d given instead.", argc)
+		}
+
+		filename := argv[0].String()
+		data := argv[1].String()
+
+		err := ioutil.WriteFile(filename, []byte(data), 0644)
+		if err != nil {
+			return errOtto("Could not write %d bytes to %s: %s", len(data), filename, err)
+		}
+
+		return otto.NullValue()
+	})
+
 	// log something
 	s.VM.Set("log", func(call otto.FunctionCall) otto.Value {
 		for _, v := range call.ArgumentList {
 			log.Info("%s", v.String())
 		}
 		return otto.Value{}
+	})
+
+	// log debug
+	s.VM.Set("log_debug", func(call otto.FunctionCall) otto.Value {
+		for _, v := range call.ArgumentList {
+			log.Debug("%s", v.String())
+		}
+		return otto.Value{}
+	})
+
+	// log info
+	s.VM.Set("log_info", func(call otto.FunctionCall) otto.Value {
+		for _, v := range call.ArgumentList {
+			log.Info("%s", v.String())
+		}
+		return otto.Value{}
+	})
+
+	// log warning
+	s.VM.Set("log_warn", func(call otto.FunctionCall) otto.Value {
+		for _, v := range call.ArgumentList {
+			log.Warning("%s", v.String())
+		}
+		return otto.Value{}
+	})
+
+	// log error
+	s.VM.Set("log_error", func(call otto.FunctionCall) otto.Value {
+		for _, v := range call.ArgumentList {
+			log.Error("%s", v.String())
+		}
+		return otto.Value{}
+	})
+
+	// log fatal
+	s.VM.Set("log_fatal", func(call otto.FunctionCall) otto.Value {
+		for _, v := range call.ArgumentList {
+			log.Fatal("%s", v.String())
+		}
+		return otto.Value{}
+	})
+
+	// javascript btoa function
+	s.VM.Set("btoa", func(call otto.FunctionCall) otto.Value {
+		varValue := base64.StdEncoding.EncodeToString([]byte(call.Argument(0).String()))
+		v, err := s.VM.ToValue(varValue)
+		if err != nil {
+			return errOtto("Could not convert to string: %s", varValue)
+		}
+		return v
+	})
+
+	// javascript atob function
+	s.VM.Set("atob", func(call otto.FunctionCall) otto.Value {
+		varValue, err := base64.StdEncoding.DecodeString(call.Argument(0).String())
+		if err != nil {
+			return errOtto("Could not decode string: %s", call.Argument(0).String())
+		}
+		v, err := s.VM.ToValue(string(varValue))
+		if err != nil {
+			return errOtto("Could not convert to string: %s", varValue)
+		}
+		return v
 	})
 
 	// read or write environment variable
@@ -117,7 +199,7 @@ func (s *ProxyScript) defineBuiltins() error {
 		if argc == 1 {
 			// get
 			varName := call.Argument(0).String()
-			if found, varValue := s.sess.Env.Get(varName); found == true {
+			if found, varValue := s.sess.Env.Get(varName); found {
 				v, err := s.VM.ToValue(varValue)
 				if err != nil {
 					return errOtto("Could not convert to string: %s", varValue)
@@ -146,7 +228,7 @@ func (s *ProxyScript) hasCallback(name string) bool {
 
 	// check the cache
 	has, found := s.cbCache[name]
-	if found == false {
+	if !found {
 		// check the VM
 		cb, err := s.VM.Get(name)
 		if err == nil && cb.IsFunction() {

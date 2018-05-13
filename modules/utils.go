@@ -18,7 +18,7 @@ func findMAC(s *session.Session, ip net.IP, probe bool) (net.HardwareAddr, error
 
 	// do we have this ip mac address?
 	mac, err = network.ArpLookup(s.Interface.Name(), ip.String(), false)
-	if err != nil && probe == true {
+	if err != nil && probe {
 		from := s.Interface.IP
 		from_hw := s.Interface.HW
 
@@ -30,7 +30,7 @@ func findMAC(s *session.Session, ip net.IP, probe bool) (net.HardwareAddr, error
 
 		time.Sleep(500 * time.Millisecond)
 
-		mac, err = network.ArpLookup(s.Interface.Name(), ip.String(), false)
+		mac, _ = network.ArpLookup(s.Interface.Name(), ip.String(), false)
 	}
 
 	if mac == "" {
